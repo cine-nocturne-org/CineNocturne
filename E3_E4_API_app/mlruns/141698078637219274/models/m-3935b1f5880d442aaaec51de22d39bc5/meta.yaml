@@ -1,0 +1,10 @@
+artifact_location: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/141698078637219274/models/m-3935b1f5880d442aaaec51de22d39bc5/artifacts
+creation_timestamp: 1756193588909
+experiment_id: '141698078637219274'
+last_updated_timestamp: 1756193593684
+model_id: m-3935b1f5880d442aaaec51de22d39bc5
+model_type: null
+name: xgboost_model
+source_run_id: a9112f470e5d44e38e3abfa3afaa22da
+status: 2
+status_message: null

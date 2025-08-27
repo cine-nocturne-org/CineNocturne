@@ -1,0 +1,14 @@
+artifact_uri: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/141698078637219274/fb4acd26b9a943b4925e985ec9242643/artifacts
+end_time: 1756194182865
+entry_point_name: ''
+experiment_id: '141698078637219274'
+lifecycle_stage: active
+run_id: fb4acd26b9a943b4925e985ec9242643
+run_name: cosine_xgboost_hybrid_user_score
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756194175909
+status: 3
+tags: []
+user_id: loulo

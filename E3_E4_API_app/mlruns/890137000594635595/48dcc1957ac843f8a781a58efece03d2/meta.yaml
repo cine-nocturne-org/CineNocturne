@@ -1,0 +1,14 @@
+artifact_uri: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/890137000594635595/48dcc1957ac843f8a781a58efece03d2/artifacts
+end_time: 1756151862153
+entry_point_name: ''
+experiment_id: '890137000594635595'
+lifecycle_stage: active
+run_id: 48dcc1957ac843f8a781a58efece03d2
+run_name: TFIDF_Cosine_Test
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756151830672
+status: 3
+tags: []
+user_id: loulo

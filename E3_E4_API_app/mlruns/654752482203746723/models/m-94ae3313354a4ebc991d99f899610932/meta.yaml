@@ -1,0 +1,10 @@
+artifact_location: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/654752482203746723/models/m-94ae3313354a4ebc991d99f899610932/artifacts
+creation_timestamp: 1756212383920
+experiment_id: '654752482203746723'
+last_updated_timestamp: 1756212390350
+model_id: m-94ae3313354a4ebc991d99f899610932
+model_type: null
+name: xgb_classifier_model
+source_run_id: bdbae35b39924a9c8f59fddd035498d5
+status: 2
+status_message: null

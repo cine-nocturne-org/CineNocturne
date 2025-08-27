@@ -1,0 +1,14 @@
+artifact_uri: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/890137000594635595/eaeafe7966fa4365a06f7bc84c909e2f/artifacts
+end_time: 1756191755667
+entry_point_name: ''
+experiment_id: '890137000594635595'
+lifecycle_stage: active
+run_id: eaeafe7966fa4365a06f7bc84c909e2f
+run_name: Baseline_vs_Hybrid
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756191741792
+status: 4
+tags: []
+user_id: loulo

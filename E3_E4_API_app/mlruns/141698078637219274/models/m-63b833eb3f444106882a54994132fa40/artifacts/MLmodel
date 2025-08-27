@@ -1,0 +1,22 @@
+artifact_path: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/141698078637219274/models/m-63b833eb3f444106882a54994132fa40/artifacts
+flavors:
+  python_function:
+    data: model.xgb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.xgboost
+    python_version: 3.12.7
+  xgboost:
+    code: null
+    data: model.xgb
+    model_class: xgboost.sklearn.XGBRegressor
+    model_format: xgb
+    xgb_version: 3.0.2
+mlflow_version: 3.3.1
+model_id: m-63b833eb3f444106882a54994132fa40
+model_size_bytes: 291835
+model_uuid: m-63b833eb3f444106882a54994132fa40
+prompts: null
+run_id: 9b83d54b1b704f89abd494619a900e14
+utc_time_created: '2025-08-26 07:30:49.326954'

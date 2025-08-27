@@ -1,0 +1,14 @@
+artifact_uri: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/654752482203746723/d63aa0f6711541a38a58b1be7db04c6a/artifacts
+end_time: 1756217967305
+entry_point_name: ''
+experiment_id: '654752482203746723'
+lifecycle_stage: active
+run_id: d63aa0f6711541a38a58b1be7db04c6a
+run_name: xgb_hybrid_classif
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756217959720
+status: 3
+tags: []
+user_id: loulo
