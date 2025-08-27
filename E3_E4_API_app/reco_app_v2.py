@@ -312,6 +312,7 @@ def main_app():
     with tab3:
         st.subheader("📺 Plateformes disponibles pour un film")
         film_details_title = st.text_input("Titre du film :", key="details_title")
+        
         if st.button("🔍 Chercher correspondances", key="btn_fuzzy"):
             if film_details_title:
                 try:
@@ -319,7 +320,7 @@ def main_app():
                         f"{API_URL}/fuzzy_match/{film_details_title}",
                         auth=HTTPBasicAuth(USERNAME, PASSWORD)
                     )
-
+    
                     if fuzzy_resp.status_code == 200:
                         matches = fuzzy_resp.json().get("matches", [])
                         if matches:
@@ -328,41 +329,41 @@ def main_app():
                             st.warning("⚠️ Aucun film trouvé avec ce titre.")
                     else:
                         st.error(fuzzy_resp.json().get("detail", "Erreur lors du fuzzy match."))
-
+    
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
             else:
                 st.warning("⚠️ Veuillez entrer un titre de film")
+    
+        # --- Étape 2 : choix du film ---
+        if "fuzzy_matches" in st.session_state:
+            chosen_movie = st.selectbox(
+                "Films correspondants :", 
+                [m["title"] for m in st.session_state["fuzzy_matches"]],  # 👈 garder juste le titre
+                key="chosen_movie_details"
+            )
+    
+            if st.button("✅ Confirmer ce film"):
+                try:
+                    response = requests.get(
+                        f"{API_URL}/movie-details/{chosen_movie}",   # 👈 chosen_movie est une string
+                        auth=HTTPBasicAuth(USERNAME, PASSWORD)
+                    )
+                    if response.status_code == 200:
+                        details = response.json()
+                        st.success("✅ Détails du film trouvés !")
+                        if details.get("poster_url"):
+                            st.image(details["poster_url"], width=150)
+                        st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
+                        st.write(f"**Genres :** {details['genres']}")
+                        st.write(f"**Note :** {details['rating']}")
+                        st.write(f"**Plateformes disponibles :** {', '.join(details['platforms'])}")
+                        st.write(details['synopsis'])
+                    else:
+                        st.error(response.json().get("detail", "Film non trouvé"))
+                except requests.exceptions.RequestException:
+                    st.error("❌ Erreur de connexion avec le serveur")
 
-    # --- Étape 2 : choix du film ---
-    if "fuzzy_matches" in st.session_state:
-        chosen_movie = st.selectbox(
-            "Films correspondants :", 
-            st.session_state["fuzzy_matches"], 
-            key="chosen_movie_details"
-        )
-
-        # --- Étape 3 : confirmation ---
-        if st.button("✅ Confirmer ce film"):
-            try:
-                response = requests.get(
-                    f"{API_URL}/movie-details/{chosen_movie}",
-                    auth=HTTPBasicAuth(USERNAME, PASSWORD)
-                )
-                if response.status_code == 200:
-                    details = response.json()
-                    st.success("✅ Détails du film trouvés !")
-                    if details.get("poster_url"):
-                        st.image(details["poster_url"], width=150)
-                    st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
-                    st.write(f"**Genres :** {details['genres']}")
-                    st.write(f"**Note :** {details['rating']}")
-                    st.write(f"**Plateformes disponibles :** {', '.join(details['platforms'])}")
-                    st.write(details['synopsis'])
-                else:
-                    st.error(response.json().get("detail", "Film non trouvé"))
-            except requests.exceptions.RequestException:
-                st.error("❌ Erreur de connexion avec le serveur")
 
 
 # Point d'entrée principal
@@ -384,6 +385,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
