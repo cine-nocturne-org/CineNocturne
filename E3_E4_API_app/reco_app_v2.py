@@ -341,11 +341,12 @@ def main_app():
             matches_info_platforms = []
             for match in st.session_state["fuzzy_matches_platforms"]:
                 details_resp = requests.get(
-                    f"{API_URL}/movie-details/{match['title']}",  # <-- utiliser le title ici
+                    f"{API_URL}/movie-details/{match['movie_id']}",  # <-- utiliser l'ID ici
                     auth=HTTPBasicAuth(USERNAME, PASSWORD)
                 )
-                poster_url = None
-                release_year = details.get("releaseYear")
+                poster_url = details.get("poster_url") or "https://via.placeholder.com/120x180?text=Pas+de+poster"
+                release_year = details.get("releaseYear") or details.get("release_year") or "N/A"
+
                 if details_resp.status_code == 200:
                     details = details_resp.json()
                     poster_url = details.get("poster_url") or poster_url
@@ -433,6 +434,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
