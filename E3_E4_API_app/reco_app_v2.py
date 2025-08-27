@@ -265,6 +265,13 @@ def main_app():
                         for m in fresh_movies:
                             st.session_state["already_seen_movies"].add(m["title"])
                         st.session_state["current_movies"] = fresh_movies
+
+                    for movie in st.session_state["current_movies"]:
+                        poster = movie.get("poster_url")
+                        synopsis = movie.get("synopsis")
+                        if not poster or not synopsis:
+                            continue  # skip films sans poster ou sans synopsis
+
     
                 # --- Premier affichage ---
                 if submitted:
@@ -278,15 +285,12 @@ def main_app():
     
                     # Affichage
                     for movie in st.session_state["current_movies"]:
-                        cols = st.columns([1, 3])
+                        cols = st.columns([1,3])
                         with cols[0]:
                             if movie.get("poster_url"):
                                 st.image(movie["poster_url"], use_container_width=True)
                         with cols[1]:
-                            # Récup infos propres
                             title = movie.get("title", "Titre inconnu")
-                            year = movie.get("releaseYear")
-    
                             raw_genres = movie.get("genres", [])
                             if isinstance(raw_genres, str):
                                 genres = [g.strip() for g in raw_genres.split(",")]
@@ -294,10 +298,9 @@ def main_app():
                                 genres = raw_genres
                             else:
                                 genres = []
-    
                             st.markdown(f"### 🎬 {title} ({year})")
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
-                            st.write(movie.get('synopsis', 'Pas de synopsis disponible.'))
+                            st.write(synopsis)
     
         except Exception as e:
             st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
@@ -387,6 +390,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
