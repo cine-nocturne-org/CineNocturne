@@ -282,12 +282,19 @@ def main_app():
     
                     # Affichage
                     for movie in st.session_state["current_movies"]:
+                        poster = movie.get("poster_url")
+                        synopsis = movie.get("synopsis")
+                        year = movie.get("releaseYear", "N/A")
+                        
+                        # On n'affiche que si on a bien un poster et un synopsis
+                        if not poster or not synopsis:
+                            continue
+                    
                         cols = st.columns([1, 3])
                         with cols[0]:
-                            st.image(movie["poster_url"], use_container_width=True)
+                            st.image(poster, use_container_width=True)
                         with cols[1]:
                             title = movie.get("title", "Titre inconnu")
-                            year = movie.get("releaseYear", "N/A")
                             raw_genres = movie.get("genres", [])
                             if isinstance(raw_genres, str):
                                 genres = [g.strip() for g in raw_genres.split(",")]
@@ -297,7 +304,8 @@ def main_app():
                                 genres = []
                             st.markdown(f"### 🎬 {title} ({year})")
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
-                            st.write(movie.get("synopsis"))
+                            st.write(synopsis)
+
     
         except Exception as e:
             st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
@@ -389,6 +397,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
