@@ -128,7 +128,7 @@ def main_app():
                 for col_idx, match in enumerate(row_matches):
                     with cols[col_idx]:
                         if match.get("poster"):
-                            st.image(match["poster"], width=120)
+                            st.image(match["poster"], width="stretch")
                         st.caption(match.get("title", "Titre inconnu"))
                         unique_key = f"select_{match['movie_id']}_{row}_{col_idx}"
                         if st.session_state.get("chosen_film") == match["title"]:
@@ -181,7 +181,7 @@ def main_app():
                                 cols = st.columns([1, 3])
                                 with cols[0]:
                                     if reco.get("poster_url"):
-                                        st.image(reco["poster_url"], use_container_width=True)
+                                        st.image(reco["poster_url"], width="stretch")
                                 with cols[1]:
                                     # Variables spécifiques à la reco
                                     reco_title = reco.get("title", "Titre inconnu")
@@ -292,7 +292,7 @@ def main_app():
                     
                         cols = st.columns([1, 3])
                         with cols[0]:
-                            st.image(poster, use_container_width=True)
+                            st.image(poster, width="stretch")
                         with cols[1]:
                             title = movie.get("title", "Titre inconnu")
                             raw_genres = movie.get("genres", [])
@@ -363,7 +363,7 @@ def main_app():
                         col1, col2 = st.columns([1,2])
                         with col1:
                             if details.get("poster_url"):
-                                st.image(details["poster_url"],use_container_width=True)
+                                st.image(details["poster_url"], width="stretch")
                         with col2:
                             st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
                             st.write(f"**Genres :** {details['genres']}")
@@ -376,8 +376,7 @@ def main_app():
                     st.error("❌ Erreur de connexion avec le serveur")
 
 
-
-
+# -----------------------------------------------------------
 # Point d'entrée principal
 def main():
     """Point d'entrée principal de l'application"""
@@ -397,26 +396,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
