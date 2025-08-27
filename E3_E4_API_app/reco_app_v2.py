@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 from urllib.parse import quote
-
+import traceback
 from requests.auth import HTTPBasicAuth
 
 API_URL = "https://cinenocturne.onrender.com/"
@@ -389,6 +389,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
