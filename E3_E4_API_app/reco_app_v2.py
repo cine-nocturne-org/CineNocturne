@@ -301,6 +301,7 @@ def main_app():
     
         except Exception as e:
             st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
+            st.text(traceback.format_exc())
 
 
     # ------------------------------
@@ -388,6 +389,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
