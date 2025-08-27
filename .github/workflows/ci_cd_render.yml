@@ -1,0 +1,42 @@
+name: CI/CD CineNocturne API
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1️⃣ Récupérer le code du repo
+    - uses: actions/checkout@v3
+
+    # 2️⃣ Installer Python
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.12
+
+    # 3️⃣ Installer les dépendances
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r E3_E4_API_app/requirements.txt
+        pip install pytest
+
+    # 4️⃣ Lancer les tests
+    - name: Run tests
+      run: |
+        pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
+
+    # 5️⃣ Déployer sur Render uniquement si les tests passent
+    - name: Deploy to Render
+      if: success()
+      env:
+        RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      run: |
+        curl -X POST "https://api.render.com/deploy/srv-XXXX" \
+          -H "Authorization: Bearer $RENDER_API_KEY"
