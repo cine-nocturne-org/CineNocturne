@@ -341,16 +341,16 @@ def main_app():
             matches_info_platforms = []
             for match in st.session_state["fuzzy_matches_platforms"]:
                 details_resp = requests.get(
-                    f"{API_URL}/movie-details/{match['movie_id']}",  # <-- utiliser l'ID ici
+                    f"{API_URL}/movie-details/{match['movie_id']}",  # ID obligatoire
                     auth=HTTPBasicAuth(USERNAME, PASSWORD)
                 )
-                poster_url = details.get("poster_url") or "https://via.placeholder.com/120x180?text=Pas+de+poster"
-                release_year = details.get("releaseYear") or details.get("release_year") or "N/A"
-
+                poster_url = details.get("poster_url")
+                release_year = details.get("releaseYear")
                 if details_resp.status_code == 200:
                     details = details_resp.json()
-                    poster_url = details.get("poster_url") or poster_url
-                    release_year = details.get("releaseYear") or release_year or None
+                    poster_url = details.get("poster_url") or poster_url or None
+                    release_year = details.get("releaseYear") or details.get("release_year") or release_year
+        
                 matches_info_platforms.append({
                     "title": match["title"],
                     "poster": poster_url,
@@ -368,13 +368,14 @@ def main_app():
                 for col_idx, match in enumerate(row_matches):
                     with cols[col_idx]:
                         st.image(match["poster"], width=120)
-                        st.caption(match.get('title', 'Titre inconnu'))
+                        st.caption(f"{match['title']} ({match['releaseYear']})")
                         unique_key = f"select_platform_{match['movie_id']}_{row}_{col_idx}"
                         if st.session_state.get("chosen_platform_movie") == match["movie_id"]:
                             st.button("✅ Sélectionné", key=unique_key, disabled=True)
                         else:
                             if st.button("Sélectionner", key=unique_key):
                                 st.session_state["chosen_platform_movie"] = match["movie_id"]
+
 
     
         # Affichage fiche complète si film sélectionné
@@ -434,6 +435,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
