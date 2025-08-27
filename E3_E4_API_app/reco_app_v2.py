@@ -253,87 +253,88 @@ def main_app():
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
     # 4. Suggestions aléatoires par genre et plateformeswith tab2:
-    st.subheader("🎲 Suggestions aléatoires par genre")
-    try:
-        genre_response = requests.get(f"{API_URL}/genres/", auth=HTTPBasicAuth(USERNAME, PASSWORD))
-        if genre_response.status_code == 200:
-            genre_list = genre_response.json()
-
-            # --- Formulaire sélection genre et plateformes ---
-            with st.form("random_movies_form"):
-                selected_genre = st.selectbox("Choisissez un genre", genre_list)
-                selected_platforms = st.multiselect(
-                    "Choisissez les plateformes", 
-                    ["netflix", "prime", "hulu", "hbo", "apple"]
-                )
-                submitted = st.form_submit_button("Afficher des films aléatoires")
-
-            # Init session state
-            if "already_seen_movies" not in st.session_state:
-                st.session_state["already_seen_movies"] = set()
-            if "current_movies" not in st.session_state:
-                st.session_state["current_movies"] = []
-
-            def fetch_random_movies():
-                """Récupère de nouveaux films sans doublons"""
-                params = {
-                    "genre": selected_genre,
-                    "platforms": selected_platforms,
-                    "limit": 20  # en demander un peu plus pour éviter doublons
-                }
-                response = requests.get(
-                    f"{API_URL}/random_movies/", 
-                    params=params, 
-                    auth=HTTPBasicAuth(USERNAME, PASSWORD)
-                )
-                if response.status_code == 200:
-                    movies = response.json()
-                    # Filtrer ceux déjà vus
-                    fresh_movies = [
-                        m for m in movies if m["title"] not in st.session_state["already_seen_movies"]
-                    ]
-                    # En garder 10 max
-                    fresh_movies = fresh_movies[:10]
-                    # Mémoriser
-                    for m in fresh_movies:
-                        st.session_state["already_seen_movies"].add(m["title"])
-                    st.session_state["current_movies"] = fresh_movies
-
-            # --- Premier affichage ---
-            if submitted:
-                st.session_state["already_seen_movies"].clear()
-                fetch_random_movies()
-
-            # --- Bouton pour nouvelles suggestions ---
-            if st.session_state["current_movies"]:
-                if st.button("🔄 Proposer d'autres films"):
+    with tab1:
+        st.subheader("🎲 Suggestions aléatoires par genre")
+        try:
+            genre_response = requests.get(f"{API_URL}/genres/", auth=HTTPBasicAuth(USERNAME, PASSWORD))
+            if genre_response.status_code == 200:
+                genre_list = genre_response.json()
+    
+                # --- Formulaire sélection genre et plateformes ---
+                with st.form("random_movies_form"):
+                    selected_genre = st.selectbox("Choisissez un genre", genre_list)
+                    selected_platforms = st.multiselect(
+                        "Choisissez les plateformes", 
+                        ["netflix", "prime", "hulu", "hbo", "apple"]
+                    )
+                    submitted = st.form_submit_button("Afficher des films aléatoires")
+    
+                # Init session state
+                if "already_seen_movies" not in st.session_state:
+                    st.session_state["already_seen_movies"] = set()
+                if "current_movies" not in st.session_state:
+                    st.session_state["current_movies"] = []
+    
+                def fetch_random_movies():
+                    """Récupère de nouveaux films sans doublons"""
+                    params = {
+                        "genre": selected_genre,
+                        "platforms": selected_platforms,
+                        "limit": 20  # en demander un peu plus pour éviter doublons
+                    }
+                    response = requests.get(
+                        f"{API_URL}/random_movies/", 
+                        params=params, 
+                        auth=HTTPBasicAuth(USERNAME, PASSWORD)
+                    )
+                    if response.status_code == 200:
+                        movies = response.json()
+                        # Filtrer ceux déjà vus
+                        fresh_movies = [
+                            m for m in movies if m["title"] not in st.session_state["already_seen_movies"]
+                        ]
+                        # En garder 10 max
+                        fresh_movies = fresh_movies[:10]
+                        # Mémoriser
+                        for m in fresh_movies:
+                            st.session_state["already_seen_movies"].add(m["title"])
+                        st.session_state["current_movies"] = fresh_movies
+    
+                # --- Premier affichage ---
+                if submitted:
+                    st.session_state["already_seen_movies"].clear()
                     fetch_random_movies()
-
-                # Affichage
-                for movie in st.session_state["current_movies"]:
-                    cols = st.columns([1, 3])
-                    with cols[0]:
-                        if movie.get("poster_url"):
-                            st.image(movie["poster_url"], use_container_width=True)
-                    with cols[1]:
-                        # Récup infos propres
-                        title = movie.get("title", "Titre inconnu")
-                        year = movie.get("releaseYear") or movie.get("release_year") or "N/A"
-
-                        raw_genres = movie.get("genres", [])
-                        if isinstance(raw_genres, str):
-                            genres = [g.strip() for g in raw_genres.split(",")]
-                        elif isinstance(raw_genres, list):
-                            genres = raw_genres
-                        else:
-                            genres = []
-
-                        st.markdown(f"### 🎬 {title} ({year})")
-                        st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
-                        st.write(movie.get('synopsis', 'Pas de synopsis disponible.'))
-
-    except Exception as e:
-        st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
+    
+                # --- Bouton pour nouvelles suggestions ---
+                if st.session_state["current_movies"]:
+                    if st.button("🔄 Proposer d'autres films"):
+                        fetch_random_movies()
+    
+                    # Affichage
+                    for movie in st.session_state["current_movies"]:
+                        cols = st.columns([1, 3])
+                        with cols[0]:
+                            if movie.get("poster_url"):
+                                st.image(movie["poster_url"], use_container_width=True)
+                        with cols[1]:
+                            # Récup infos propres
+                            title = movie.get("title", "Titre inconnu")
+                            year = movie.get("releaseYear") or movie.get("release_year") or "N/A"
+    
+                            raw_genres = movie.get("genres", [])
+                            if isinstance(raw_genres, str):
+                                genres = [g.strip() for g in raw_genres.split(",")]
+                            elif isinstance(raw_genres, list):
+                                genres = raw_genres
+                            else:
+                                genres = []
+    
+                            st.markdown(f"### 🎬 {title} ({year})")
+                            st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
+                            st.write(movie.get('synopsis', 'Pas de synopsis disponible.'))
+    
+        except Exception as e:
+            st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
 
     # ------------------------------
     # Onglet 3 : Plateformes dispo
@@ -465,3 +466,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
