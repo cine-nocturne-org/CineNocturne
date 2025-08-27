@@ -141,10 +141,44 @@ def main_app():
                             if st.button("Sélectionner", key=unique_key):
                                 st.session_state["chosen_film"] = match["title"]
 
-        # 3️⃣ Notation (uniquement si film choisi)
+        # 3️⃣ Notation et affichage des infos principales (uniquement si film choisi)
         chosen_film = st.session_state.get("chosen_film")
         if chosen_film:
             st.success(f"🎬 Film sélectionné : {chosen_film}")
+
+            # Récupération des détails pour affichage
+            details_resp = requests.get(
+                f"{API_URL}/movie-details/{chosen_film}",
+                auth=HTTPBasicAuth(USERNAME, PASSWORD)
+            )
+            if details_resp.status_code == 200:
+                details = details_resp.json()
+
+                # --- Infos principales corrigées ---
+                title = details.get("title", "Titre inconnu")
+                year = details.get("releaseYear") or details.get("release_year") or details.get("year") or "N/A"
+
+                raw_genres = details.get("genres", [])
+                if isinstance(raw_genres, str):
+                    genres = [g.strip() for g in raw_genres.split(",")]
+                elif isinstance(raw_genres, list):
+                    genres = raw_genres
+                else:
+                    genres = []
+
+                poster = details.get("poster_url", None)
+                platforms = details.get("platforms", [])
+                synopsis = details.get("synopsis", "Pas de synopsis disponible.")
+
+                # --- Affichage ---
+                st.markdown(f"### 🎬 {title} ({year})")
+                st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
+                st.write(f"**Plateformes :** {', '.join(platforms) if platforms else 'Indisponible'}")
+                if poster:
+                    st.image(poster, width=150)
+                st.write(synopsis)
+
+            # Notation
             note_input = st.number_input(
                 "Note du film (0.0 - 10.0)",
                 min_value=0.0,
@@ -167,7 +201,7 @@ def main_app():
                     detail = update_resp.json().get("detail", "Erreur inconnue")
                     st.error(f"❌ Échec : {detail}")
 
-        # 4️⃣ Recommandation (uniquement si film choisi)
+        # 4️⃣ Recommandation (si film choisi)
         if chosen_film:
             st.subheader("🔍 Obtenir une recommandation personnalisée")
             if st.button("Me recommander un film", key="btn_reco"):
@@ -187,10 +221,20 @@ def main_app():
                                     if reco.get("poster_url"):
                                         st.image(reco["poster_url"], width=150)
                                 with cols[1]:
-                                    st.markdown(f"### 🎥 {reco['title']} ({reco.get('releaseYear', 'N/A')})")
+                                    # Gestion correcte de l'année et genres
+                                    year = reco.get("releaseYear", "N/A")
+                                    raw_genres = reco.get("genres", [])
+                                    if isinstance(raw_genres, str):
+                                        genres = [g.strip() for g in raw_genres.split(",")]
+                                    elif isinstance(raw_genres, list):
+                                        genres = raw_genres
+                                    else:
+                                        genres = []
+
+                                    st.markdown(f"### 🎥 {reco['title']} ({year})")
                                     score_pct = int(reco.get("pred_score", 0) * 100)
                                     st.markdown(f"**Ce film est susceptible de vous plaire à {score_pct}%**")
-                                    st.write(f"**Genres :** {', '.join(reco.get('genres', [])) if reco.get('genres') else 'N/A'}")
+                                    st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                                     st.write(f"**Plateformes disponibles :** {', '.join(reco.get('platforms', [])) if reco.get('platforms') else 'N/A'}")
                                     st.write(reco.get('synopsis', 'Pas de synopsis disponible.'))
                         else:
@@ -201,103 +245,91 @@ def main_app():
                     st.error("❌ Erreur de connexion avec le serveur")
 
 
-
-
-
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
-    # 4. Suggestions aléatoires par genre et plateformes
-    with tab2:
-        st.subheader("🎲 Suggestions aléatoires par genre")
-        try:
-            genre_response = requests.get(f"{API_URL}/genres/", auth=HTTPBasicAuth(USERNAME, PASSWORD))
-            if genre_response.status_code == 200:
-                genre_list = genre_response.json()
+    # 4. Suggestions aléatoires par genre et plateformeswith tab2:
+    st.subheader("🎲 Suggestions aléatoires par genre")
+    try:
+        genre_response = requests.get(f"{API_URL}/genres/", auth=HTTPBasicAuth(USERNAME, PASSWORD))
+        if genre_response.status_code == 200:
+            genre_list = genre_response.json()
 
-                # --- Formulaire sélection genre et plateformes ---
-                with st.form("random_movies_form"):
-                    selected_genre = st.selectbox("Choisissez un genre", genre_list)
-                    selected_platforms = st.multiselect(
-                        "Choisissez les plateformes", 
-                        ["netflix", "prime", "hulu", "hbo", "apple"]
-                    )
-                    submitted = st.form_submit_button("Afficher des films aléatoires")
+            # --- Formulaire sélection genre et plateformes ---
+            with st.form("random_movies_form"):
+                selected_genre = st.selectbox("Choisissez un genre", genre_list)
+                selected_platforms = st.multiselect(
+                    "Choisissez les plateformes", 
+                    ["netflix", "prime", "hulu", "hbo", "apple"]
+                )
+                submitted = st.form_submit_button("Afficher des films aléatoires")
 
-                # Init session state
-                if "already_seen_movies" not in st.session_state:
-                    st.session_state["already_seen_movies"] = set()
-                if "current_movies" not in st.session_state:
-                    st.session_state["current_movies"] = []
+            # Init session state
+            if "already_seen_movies" not in st.session_state:
+                st.session_state["already_seen_movies"] = set()
+            if "current_movies" not in st.session_state:
+                st.session_state["current_movies"] = []
 
-                def fetch_random_movies():
-                    """Récupère de nouveaux films sans doublons"""
-                    params = {
-                        "genre": selected_genre,
-                        "platforms": selected_platforms,
-                        "limit": 20  # en demander un peu plus pour éviter doublons
-                    }
-                    response = requests.get(
-                        f"{API_URL}/random_movies/", 
-                        params=params, 
-                        auth=HTTPBasicAuth(USERNAME, PASSWORD)
-                    )
-                    if response.status_code == 200:
-                        movies = response.json()
-                        # Filtrer ceux déjà vus
-                        fresh_movies = [
-                            m for m in movies if m["title"] not in st.session_state["already_seen_movies"]
-                        ]
-                        # En garder 10 max
-                        fresh_movies = fresh_movies[:10]
-                        # Mémoriser
-                        for m in fresh_movies:
-                            st.session_state["already_seen_movies"].add(m["title"])
-                        st.session_state["current_movies"] = fresh_movies
+            def fetch_random_movies():
+                """Récupère de nouveaux films sans doublons"""
+                params = {
+                    "genre": selected_genre,
+                    "platforms": selected_platforms,
+                    "limit": 20  # en demander un peu plus pour éviter doublons
+                }
+                response = requests.get(
+                    f"{API_URL}/random_movies/", 
+                    params=params, 
+                    auth=HTTPBasicAuth(USERNAME, PASSWORD)
+                )
+                if response.status_code == 200:
+                    movies = response.json()
+                    # Filtrer ceux déjà vus
+                    fresh_movies = [
+                        m for m in movies if m["title"] not in st.session_state["already_seen_movies"]
+                    ]
+                    # En garder 10 max
+                    fresh_movies = fresh_movies[:10]
+                    # Mémoriser
+                    for m in fresh_movies:
+                        st.session_state["already_seen_movies"].add(m["title"])
+                    st.session_state["current_movies"] = fresh_movies
 
-                # --- Premier affichage ---
-                if submitted:
-                    st.session_state["already_seen_movies"].clear()
+            # --- Premier affichage ---
+            if submitted:
+                st.session_state["already_seen_movies"].clear()
+                fetch_random_movies()
+
+            # --- Bouton pour nouvelles suggestions ---
+            if st.session_state["current_movies"]:
+                if st.button("🔄 Proposer d'autres films"):
                     fetch_random_movies()
 
-                # --- Bouton pour nouvelles suggestions ---
-                if st.session_state["current_movies"]:
-                    if st.button("🔄 Proposer d'autres films"):
-                        fetch_random_movies()
+                # Affichage
+                for movie in st.session_state["current_movies"]:
+                    cols = st.columns([1, 3])
+                    with cols[0]:
+                        if movie.get("poster_url"):
+                            st.image(movie["poster_url"], use_container_width=True)
+                    with cols[1]:
+                        # Récup infos propres
+                        title = movie.get("title", "Titre inconnu")
+                        year = movie.get("releaseYear") or movie.get("release_year") or "N/A"
 
-                    # Affichage
-                    for movie in st.session_state["current_movies"]:
-                        cols = st.columns([1, 3])
-                        with cols[0]:
-                            if movie.get("poster_url"):
-                                st.image(movie["poster_url"], use_container_width=True)
-                        with cols[1]:
-                            # Récup infos propres
-                            title = movie.get("title", "Titre inconnu")
-                            year = movie.get("year", "N/A")
+                        raw_genres = movie.get("genres", [])
+                        if isinstance(raw_genres, str):
+                            genres = [g.strip() for g in raw_genres.split(",")]
+                        elif isinstance(raw_genres, list):
+                            genres = raw_genres
+                        else:
+                            genres = []
 
-                            platforms = movie.get("platforms")
-                            if not platforms:
-                                platforms_display = "Indisponible"
-                            else:
-                                platforms_display = ", ".join(platforms)
+                        st.markdown(f"### 🎬 {title} ({year})")
+                        st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
+                        st.write(movie.get('synopsis', 'Pas de synopsis disponible.'))
 
-                            genres = movie.get("genres")
-                            if isinstance(genres, str):
-                                genres = [genres]
-                            elif genres is None:
-                                genres = []
-
-                            st.markdown(f"### 🎬 {title} ({year})")
-                            st.write(f"**Plateformes :** {platforms_display}")
-                            st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
-                            st.write(movie.get('synopsis', 'Pas de synopsis disponible.'))
-
-        except Exception as e:
-            st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
-
-
-
+    except Exception as e:
+        st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
 
 
     # ------------------------------
@@ -307,7 +339,7 @@ def main_app():
     with tab3:
         st.subheader("📺 Plateformes disponibles pour un film")
         film_details_title = st.text_input("Titre du film :", key="details_title")
-        
+
         # Bouton de recherche
         if st.button("🔍 Chercher correspondances", key="btn_fuzzy"):
             if film_details_title:
@@ -340,13 +372,16 @@ def main_app():
                     auth=HTTPBasicAuth(USERNAME, PASSWORD)
                 )
                 poster_url = None
+                release_year = "N/A"
                 if details_resp.status_code == 200:
                     details = details_resp.json()
                     poster_url = details.get("poster_url")
+                    release_year = details.get("releaseYear") or details.get("release_year") or "N/A"
                 matches_info.append({
                     "title": match["title"],
                     "poster": poster_url,
-                    "movie_id": match["movie_id"]
+                    "movie_id": match["movie_id"],
+                    "releaseYear": release_year
                 })
 
             st.markdown("### Sélectionnez le film correct :")
@@ -360,7 +395,7 @@ def main_app():
                     with cols[col_idx]:
                         if match.get("poster"):
                             st.image(match["poster"], width=120)
-                        st.caption(match.get("title", "Titre inconnu"))
+                        st.caption(f"{match.get('title', 'Titre inconnu')} ({match.get('releaseYear')})")
                         unique_key = f"select_platform_{match['movie_id']}"
 
                         # Bouton de sélection
@@ -383,8 +418,21 @@ def main_app():
                     st.success("✅ Détails du film trouvés !")
                     if details.get("poster_url"):
                         st.image(details["poster_url"], width=150)
-                    st.markdown(f"### 🎬 {details['title']} ({details.get('releaseYear', 'N/A')})")
-                    st.write(f"**Genres :** {', '.join(details.get('genres', [])) if details.get('genres') else 'N/A'}")
+
+                    # Genres robustes
+                    raw_genres = details.get("genres", [])
+                    if isinstance(raw_genres, str):
+                        genres = [g.strip() for g in raw_genres.split(",")]
+                    elif isinstance(raw_genres, list):
+                        genres = raw_genres
+                    else:
+                        genres = []
+
+                    # Année avec fallback
+                    year = details.get("releaseYear") or details.get("release_year") or "N/A"
+
+                    st.markdown(f"### 🎬 {details['title']} ({year})")
+                    st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                     st.write(f"**Note :** {details.get('rating', 'N/A')}")
                     st.write(f"**Plateformes disponibles :** {', '.join(details.get('platforms', [])) if details.get('platforms') else 'Indisponible'}")
                     st.write(details.get('synopsis', 'Pas de synopsis disponible.'))
@@ -392,6 +440,7 @@ def main_app():
                     st.error(response.json().get("detail", "Film non trouvé"))
             except requests.exceptions.RequestException:
                 st.error("❌ Erreur de connexion avec le serveur")
+
 
 
 
