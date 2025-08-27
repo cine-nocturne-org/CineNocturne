@@ -32,10 +32,9 @@ engine = create_engine(DATABASE_URL)
 
 # --- Charger les objets ML ---
 # Récupérer le chemin du dossier courant du fichier Python
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # dossier où est le fichier Python
+MODEL_DIR = os.path.join(BASE_DIR, "model")            # dossier model relatif au script
 
-# Charger les modèles
 xgb_model = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
 mlb = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
 scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
@@ -43,8 +42,6 @@ nn_full = joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"))
 reco_vectorizer = joblib.load(os.path.join(MODEL_DIR, "reco_vectorizer.joblib"))
 svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
 tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
-
-# Charger le CSV
 movie_index_df = pd.read_csv(os.path.join(MODEL_DIR, "movie_index.csv"))
 
 
