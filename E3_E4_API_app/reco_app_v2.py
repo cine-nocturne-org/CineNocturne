@@ -133,7 +133,7 @@ def main_app():
                         if match.get("poster"):
                             st.image(match["poster"], width=120)
                         st.caption(match.get("title", "Titre inconnu"))
-                        unique_key = f"select_{match['movie_id']}"
+                        unique_key = f"select_{match['movie_id']}_{row}_{col_idx}"
                         if st.session_state.get("chosen_film") == match["title"]:
                             st.button("✅ Sélectionné", key=unique_key, disabled=True)
                         else:
@@ -369,7 +369,7 @@ def main_app():
                         if match.get("poster"):
                             st.image(match["poster"], width=120)
                         st.caption(f"{match.get('title', 'Titre inconnu')} ({match.get('releaseYear')})")
-                        unique_key = f"select_platform_{match['movie_id']}"
+                        unique_key = f"select_platform_{match['movie_id']}_{row}_{col_idx}"
 
                         # Bouton de sélection
                         if st.session_state.get("chosen_platform_movie") == match["movie_id"]:
@@ -435,6 +435,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
