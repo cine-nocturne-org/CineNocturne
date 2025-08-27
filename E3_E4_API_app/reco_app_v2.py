@@ -4,7 +4,7 @@ from urllib.parse import quote
 
 from requests.auth import HTTPBasicAuth
 
-API_URL = "http://localhost:8000/"
+API_URL = "https://cinenocturne.onrender.com/docs"
 # cmd lancemennt : streamlit run reco_app_v2.py
 
 # Configuration de la page
