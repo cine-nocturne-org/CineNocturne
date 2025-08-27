@@ -188,7 +188,7 @@ def main_app():
                                 with cols[1]:
                                     # Variables spécifiques à la reco
                                     reco_title = reco.get("title", "Titre inconnu")
-                                    reco_year = reco.get("releaseYear") or reco.get("release_year") or "N/A"
+                                    reco_year = reco.get("releaseYear")
                                     reco_genres_raw = reco.get("genres", [])
                                     if isinstance(reco_genres_raw, str):
                                         reco_genres = [g.strip() for g in reco_genres_raw.split(",")]
@@ -288,7 +288,7 @@ def main_app():
                         with cols[1]:
                             # Récup infos propres
                             title = movie.get("title", "Titre inconnu")
-                            year = movie.get("releaseYear") or movie.get("release_year") or "N/A"
+                            year = movie.get("releaseYear")
     
                             raw_genres = movie.get("genres", [])
                             if isinstance(raw_genres, str):
@@ -337,32 +337,44 @@ def main_app():
     
         # --- Étape 2 : choix du film ---
         if "fuzzy_matches" in st.session_state:
-            chosen_movie = st.selectbox(
-                "Films correspondants :", 
-                [m["title"] for m in st.session_state["fuzzy_matches"]],  # 👈 garder juste le titre
-                key="chosen_movie_details"
-            )
+    chosen_movie = st.selectbox(
+        "Films correspondants :", 
+        [m["title"] for m in st.session_state["fuzzy_matches"]],  
+        key="chosen_movie_details"
+    )
     
-            if st.button("✅ Confirmer ce film"):
-                try:
-                    response = requests.get(
-                        f"{API_URL}/movie-details/{chosen_movie}",   # 👈 chosen_movie est une string
-                        auth=HTTPBasicAuth(USERNAME, PASSWORD)
-                    )
-                    if response.status_code == 200:
-                        details = response.json()
-                        st.success("✅ Détails du film trouvés !")
-                        if details.get("poster_url"):
-                            st.image(details["poster_url"], width=150)
-                        st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
-                        st.write(f"**Genres :** {details['genres']}")
-                        st.write(f"**Note :** {details['rating']}")
-                        st.write(f"**Plateformes disponibles :** {', '.join(details['platforms'])}")
-                        st.write(details['synopsis'])
-                    else:
-                        st.error(response.json().get("detail", "Film non trouvé"))
-                except requests.exceptions.RequestException:
-                    st.error("❌ Erreur de connexion avec le serveur")
+    # 👉 Affiche le poster du film sélectionné AVANT la confirmation
+    selected_match = next(
+        (m for m in st.session_state["fuzzy_matches"] if m["title"] == chosen_movie), 
+        None
+    )
+    if selected_match and "poster_url" in selected_match:
+        st.image(selected_match["poster_url"], width=150, caption=chosen_movie)
+    
+    if st.button("✅ Confirmer ce film"):
+        try:
+            response = requests.get(
+                f"{API_URL}/movie-details/{chosen_movie}",   
+                auth=HTTPBasicAuth(USERNAME, PASSWORD)
+            )
+            if response.status_code == 200:
+                details = response.json()
+                st.success("✅ Détails du film trouvés !")
+                col1, col2 = st.columns([1,2])
+                with col1:
+                    if details.get("poster_url"):
+                        st.image(details["poster_url"], width=150)
+                with col2:
+                    st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
+                    st.write(f"**Genres :** {details['genres']}")
+                    st.write(f"**Note :** {details['rating']}")
+                    st.write(f"**Plateformes disponibles :** {', '.join(details['platforms'])}")
+                    st.write(details['synopsis'])
+            else:
+                st.error(response.json().get("detail", "Film non trouvé"))
+        except requests.exceptions.RequestException:
+            st.error("❌ Erreur de connexion avec le serveur")
+
 
 
 
@@ -385,6 +397,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
