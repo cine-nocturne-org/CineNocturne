@@ -197,7 +197,7 @@ def main_app():
                                     reco_synopsis = reco.get("synopsis", "Pas de synopsis disponible.")
                                     score_pct = int(reco.get("pred_score", 0) * 100)
     
-                                    st.markdown(f"### 🎬 {reco_title} ({reco_year})")
+                                    st.markdown(f"### 🎬 {reco_title}")
                                     st.markdown(f"**Ce film est susceptible de vous plaire à {score_pct}%**")
                                     st.write(f"**Genres :** {', '.join(reco_genres) if reco_genres else 'N/A'}")
                                     st.write(f"**Plateformes disponibles :** {', '.join(reco_platforms) if reco_platforms else 'Indisponible'}")
@@ -302,7 +302,7 @@ def main_app():
                                 genres = raw_genres
                             else:
                                 genres = []
-                            st.markdown(f"### 🎬 {title} ({year})")
+                            st.markdown(f"### 🎬 {title}")
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                             st.write(synopsis)
 
@@ -396,5 +396,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
