@@ -311,107 +311,61 @@ def main_app():
     # 5. Plateformes disponibles pour un film
     with tab3:
         st.subheader("📺 Plateformes disponibles pour un film")
-        film_details_title = st.text_input("Titre du film :", key="details_title_tab3")
-    
-        # Bouton de recherche
-        if st.button("🔍 Chercher correspondances", key="btn_fuzzy_tab3"):
-            if film_details_title:
-                try:
-                    fuzzy_resp = requests.get(
-                        f"{API_URL}/fuzzy_match/{film_details_title}",
-                        auth=HTTPBasicAuth(USERNAME, PASSWORD)
-                    )
-    
-                    if fuzzy_resp.status_code == 200:
-                        matches = fuzzy_resp.json().get("matches", [])
-                        if matches:
-                            st.session_state["fuzzy_matches_platforms"] = matches
-                            st.session_state["chosen_platform_movie"] = None  # reset film choisi
-                        else:
-                            st.warning("⚠️ Aucun film trouvé avec ce titre.")
-                    else:
-                        st.error(fuzzy_resp.json().get("detail", "Erreur lors du fuzzy match."))
-                except requests.exceptions.RequestException:
-                    st.error("❌ Erreur de connexion avec le serveur")
-            else:
-                st.warning("⚠️ Veuillez entrer un titre de film")
-    
-        # Affichage des correspondances pour sélection
-        if st.session_state.get("fuzzy_matches_platforms"):
-            matches_info_platforms = []
-            for match in st.session_state["fuzzy_matches_platforms"]:
-                details_resp = requests.get(
-                    f"{API_URL}/movie-details/{match['movie_id']}",  # ID obligatoire
-                    auth=HTTPBasicAuth(USERNAME, PASSWORD)
-                )
-                poster_url = details.get("poster_url")
-                release_year = details.get("releaseYear")
-                if details_resp.status_code == 200:
-                    details = details_resp.json()
-                    poster_url = details.get("poster_url") or poster_url or None
-                    release_year = details.get("releaseYear") or details.get("release_year") or release_year
+        # Saisie du titre
+        film_title = st.text_input("Titre du film :")
         
-                matches_info_platforms.append({
-                    "title": match["title"],
-                    "poster": poster_url,
-                    "movie_id": match["movie_id"],
-                    "releaseYear": release_year
-                })
-        
-            st.markdown("### Sélectionnez le film correct :")
-            rows, cols_per_row = 2, 5
-            for row in range(rows):
-                row_matches = matches_info_platforms[row*cols_per_row : (row+1)*cols_per_row]
-                if not row_matches:
-                    continue
-                cols = st.columns(len(row_matches))
-                for col_idx, match in enumerate(row_matches):
-                    with cols[col_idx]:
-                        st.image(match["poster"], width=120)
-                        st.caption(f"{match['title']} ({match['releaseYear']})")
-                        unique_key = f"select_platform_{match['movie_id']}_{row}_{col_idx}"
-                        if st.session_state.get("chosen_platform_movie") == match["movie_id"]:
-                            st.button("✅ Sélectionné", key=unique_key, disabled=True)
-                        else:
-                            if st.button("Sélectionner", key=unique_key):
-                                st.session_state["chosen_platform_movie"] = match["movie_id"]
-
-
-    
-        # Affichage fiche complète si film sélectionné
-        chosen_movie_id = st.session_state.get("chosen_platform_movie")
-        if chosen_movie_id:
+        # Bouton recherche fuzzy
+        if st.button("🔍 Chercher correspondances") and film_title:
             try:
-                response = requests.get(
-                    f"{API_URL}/movie-details/{chosen_movie_id}",
+                resp = requests.get(
+                    f"{API_URL}/fuzzy_match/{film_title}",
                     auth=HTTPBasicAuth(USERNAME, PASSWORD)
                 )
-                if response.status_code == 200:
-                    details = response.json()
-                    st.success("✅ Détails du film trouvés !")
-                    st.image(details.get("poster_url") or "https://via.placeholder.com/150x225?text=Pas+de+poster", width=150)
-    
-                    # Genres robustes
-                    raw_genres = details.get("genres", [])
-                    if isinstance(raw_genres, str):
-                        genres = [g.strip() for g in raw_genres.split(",")]
-                    elif isinstance(raw_genres, list):
-                        genres = raw_genres
+                if resp.status_code == 200:
+                    matches = resp.json().get("matches", [])
+                    if matches:
+                        st.session_state["matches"] = matches
+                        st.session_state["selected_movie_id"] = None
                     else:
-                        genres = []
-    
-                    # Année avec fallback
-                    year = details.get("releaseYear") or details.get("release_year") or "N/A"
-    
-                    st.markdown(f"### 🎬 {details['title']} ({year})")
+                        st.warning("⚠️ Aucun film trouvé.")
+                else:
+                    st.error(resp.json().get("detail", "Erreur fuzzy match."))
+            except requests.exceptions.RequestException:
+                st.error("❌ Erreur de connexion au serveur")
+        
+        # Sélection du film
+        if st.session_state.get("matches"):
+            st.markdown("### Sélectionnez le film correct :")
+            for m in st.session_state["matches"]:
+                movie_id = m["movie_id"]
+                label = f"{m['title']} ({m.get('releaseYear', 'N/A')})"
+                key_btn = f"select_{movie_id}"
+                if st.session_state.get("selected_movie_id") == movie_id:
+                    st.button(f"✅ {label}", key=key_btn, disabled=True)
+                else:
+                    if st.button(label, key=key_btn):
+                        st.session_state["selected_movie_id"] = movie_id
+        
+        # Affichage des détails
+        selected_id = st.session_state.get("selected_movie_id")
+        if selected_id:
+            try:
+                resp = requests.get(
+                    f"{API_URL}/movie-details/{selected_id}",
+                    auth=HTTPBasicAuth(USERNAME, PASSWORD)
+                )
+                if resp.status_code == 200:
+                    details = resp.json()
+                    st.markdown(f"### 🎬 {details['title']} ({details.get('releaseYear', 'N/A')})")
+                    genres = details.get("genres")
                     st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                     st.write(f"**Note :** {details.get('rating', 'N/A')}")
                     st.write(f"**Plateformes disponibles :** {', '.join(details.get('platforms', [])) if details.get('platforms') else 'Indisponible'}")
-                    st.write(details.get('synopsis', 'Pas de synopsis disponible.'))
+                    st.write(details.get("synopsis", "Pas de synopsis disponible."))
                 else:
-                    st.error(response.json().get("detail", "Film non trouvé"))
+                    st.error(resp.json().get("detail", "Film non trouvé"))
             except requests.exceptions.RequestException:
-                st.error("❌ Erreur de connexion avec le serveur")
+                st.error("❌ Erreur de connexion au serveur")
 
 
 
@@ -435,6 +389,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
