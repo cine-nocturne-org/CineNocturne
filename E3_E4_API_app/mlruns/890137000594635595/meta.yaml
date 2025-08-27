@@ -1,0 +1,6 @@
+artifact_location: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/890137000594635595
+creation_time: 1756150408591
+experiment_id: '890137000594635595'
+last_update_time: 1756150408591
+lifecycle_stage: active
+name: movie_cosine_similarity_test
