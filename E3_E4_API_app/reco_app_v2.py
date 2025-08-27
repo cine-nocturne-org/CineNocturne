@@ -65,7 +65,7 @@ def main_app():
     # ------------------------------
     # Onglets
     # ------------------------------
-    tab1, tab2, tab3 = st.tabs(["⭐ Recommandations perso", "🎲 Suggestions aléatoires", "📄 Plateformes dispo"])
+    tab1, tab2, tab3 = st.tabs(["⭐ Recommandations perso", "🎲 Suggestions aléatoires", "📺​ Plateformes disponibles"])
 
 
     # ------------------------------
@@ -79,8 +79,10 @@ def main_app():
 
         # 1️⃣ Entrée titre + bouton Chercher
         film_input = st.text_input("Entrez le titre du film :")
+
         if st.button("Chercher", key="btn_search"):
             st.session_state["fuzzy_matches"] = None
+            st.session_state["chosen_film"] = None  # reset film choisi
             if film_input:
                 try:
                     response = requests.get(
@@ -99,8 +101,8 @@ def main_app():
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
 
-        # 2️⃣ Sélection du film parmi les correspondances
-        if "fuzzy_matches" in st.session_state and st.session_state["fuzzy_matches"]:
+        # 2️⃣ Sélection du film (uniquement si recherche effectuée)
+        if st.session_state.get("fuzzy_matches"):
             matches_info = []
             for match in st.session_state["fuzzy_matches"]:
                 details_resp = requests.get(
@@ -120,12 +122,9 @@ def main_app():
                 })
 
             st.markdown("### Sélectionnez le film correct :")
-            rows = 2
-            cols_per_row = 5
+            rows, cols_per_row = 2, 5
             for row in range(rows):
-                start_idx = row * cols_per_row
-                end_idx = start_idx + cols_per_row
-                row_matches = matches_info[start_idx:end_idx]
+                row_matches = matches_info[row*cols_per_row : (row+1)*cols_per_row]
                 if not row_matches:
                     continue
                 cols = st.columns(len(row_matches))
@@ -135,17 +134,15 @@ def main_app():
                             st.image(match["poster"], width=120)
                         st.caption(match.get("title", "Titre inconnu"))
                         unique_key = f"select_{match['movie_id']}"
-                        
-                        # Si déjà sélectionné, on désactive le bouton ou on le marque
+
                         if st.session_state.get("chosen_film") == match["title"]:
                             st.button("✅ Sélectionné", key=unique_key, disabled=True)
                         else:
                             if st.button("Sélectionner", key=unique_key):
                                 st.session_state["chosen_film"] = match["title"]
 
-
-        # 3️⃣ Notation du film
-        chosen_film = st.session_state.get("chosen_film", None)
+        # 3️⃣ Notation (uniquement si film choisi)
+        chosen_film = st.session_state.get("chosen_film")
         if chosen_film:
             st.success(f"🎬 Film sélectionné : {chosen_film}")
             note_input = st.number_input(
@@ -170,10 +167,10 @@ def main_app():
                     detail = update_resp.json().get("detail", "Erreur inconnue")
                     st.error(f"❌ Échec : {detail}")
 
-        # 4️⃣ Recommandation personnalisée
-        st.subheader("🔍 Obtenir une recommandation personnalisée")
-        if st.button("Me recommander un film", key="btn_reco"):
-            if chosen_film:
+        # 4️⃣ Recommandation (uniquement si film choisi)
+        if chosen_film:
+            st.subheader("🔍 Obtenir une recommandation personnalisée")
+            if st.button("Me recommander un film", key="btn_reco"):
                 try:
                     response = requests.get(
                         f"{API_URL}/recommend_xgb_personalized/{chosen_film}",
@@ -202,8 +199,7 @@ def main_app():
                         st.error(response.json().get("detail", "Erreur inconnue"))
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
-            else:
-                st.warning("⚠️ Veuillez sélectionner un film pour obtenir des recommandations")
+
 
 
 
@@ -246,7 +242,7 @@ def main_app():
                             cols = st.columns([1, 3])
                             with cols[0]:
                                 if movie.get("poster_url"):
-                                    st.image(movie["poster_url"], use_column_width=True)
+                                    st.image(movie["poster_url"], use_container_width=True)
                             with cols[1]:
                                 st.markdown(f"### 🎮 {movie['title']} ({movie['platform']})")
                                 st.write(f"**Genres :** {', '.join(movie['genres']) if movie.get('genres') else 'N/A'}")
@@ -262,7 +258,7 @@ def main_app():
     # ------------------------------
     # 5. Plateformes disponibles pour un film
     with tab3:
-        st.subheader("📄 Plateformes disponibles pour un film")
+        st.subheader("📺​ Plateformes disponibles pour un film")
         film_details_title = st.text_input("Titre du film :", key="details_title")
         if st.button("🔍 Chercher correspondances", key="btn_fuzzy"):
             if film_details_title:
@@ -288,17 +284,17 @@ def main_app():
 
     # --- Étape 2 : choix du film ---
     if "fuzzy_matches" in st.session_state:
-        chosen_movie = st.selectbox(
-            "Films correspondants :", 
-            st.session_state["fuzzy_matches"], 
-            key="chosen_movie_details"
-        )
+        # Construire une liste lisible pour la selectbox
+        options = {f"{m['title']} (score: {m['score']}%)": m["movie_id"] for m in st.session_state["fuzzy_matches"]}
+        
+        chosen_label = st.selectbox("Films correspondants :", list(options.keys()), key="chosen_movie_details")
+        chosen_movie_id = options[chosen_label]  # On récupère l'ID correspondant
 
         # --- Étape 3 : confirmation ---
         if st.button("✅ Confirmer ce film"):
             try:
                 response = requests.get(
-                    f"{API_URL}/movie-details/{chosen_movie}",
+                    f"{API_URL}/movie-details/{chosen_movie_id}",
                     auth=HTTPBasicAuth(USERNAME, PASSWORD)
                 )
                 if response.status_code == 200:
@@ -315,6 +311,7 @@ def main_app():
                     st.error(response.json().get("detail", "Film non trouvé"))
             except requests.exceptions.RequestException:
                 st.error("❌ Erreur de connexion avec le serveur")
+
 
 
 
