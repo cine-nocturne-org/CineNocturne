@@ -253,7 +253,7 @@ def main_app():
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
     # 4. Suggestions aléatoires par genre et plateformeswith tab2:
-    with tab1:
+    with tab2:
         st.subheader("🎲 Suggestions aléatoires par genre")
         try:
             genre_response = requests.get(f"{API_URL}/genres/", auth=HTTPBasicAuth(USERNAME, PASSWORD))
@@ -466,4 +466,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
