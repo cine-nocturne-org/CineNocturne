@@ -269,8 +269,11 @@ def main_app():
                     for movie in st.session_state["current_movies"]:
                         poster = movie.get("poster_url")
                         synopsis = movie.get("synopsis")
-                        if not poster or not synopsis:
-                            continue  # skip films sans poster ou sans synopsis
+                        year = movie.get("releaseYear")
+                        
+                        # on n'affiche que les films complets
+                        if not poster or not synopsis or not year:
+                            continue # skip films sans poster ou sans synopsis
 
     
                 # --- Premier affichage ---
@@ -390,6 +393,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
