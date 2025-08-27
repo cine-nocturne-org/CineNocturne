@@ -341,15 +341,15 @@ def main_app():
             matches_info_platforms = []
             for match in st.session_state["fuzzy_matches_platforms"]:
                 details_resp = requests.get(
-                    f"{API_URL}/movie-details/{match['movie_id']}",
+                    f"{API_URL}/movie-details/{match['title']}",  # <-- utiliser le title ici
                     auth=HTTPBasicAuth(USERNAME, PASSWORD)
                 )
-                poster_url = "https://via.placeholder.com/120x180?text=Pas+de+poster"
-                release_year = "N/A"
+                poster_url = None
+                release_year = details.get("releaseYear")
                 if details_resp.status_code == 200:
                     details = details_resp.json()
                     poster_url = details.get("poster_url") or poster_url
-                    release_year = details.get("releaseYear") or details.get("release_year") or release_year
+                    release_year = details.get("releaseYear") or release_year or None
                 matches_info_platforms.append({
                     "title": match["title"],
                     "poster": poster_url,
@@ -433,6 +433,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
