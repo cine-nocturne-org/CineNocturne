@@ -71,9 +71,6 @@ def main_app():
     # ------------------------------
     # Onglet 1 : Film vu + reco perso
     # ------------------------------
-    # ------------------------------
-    # Section "Film vu / Notation"
-    # ------------------------------
     with tab1:
         st.subheader("✨​​ Noter un film que vous avez vu")
     
@@ -184,7 +181,7 @@ def main_app():
                                 cols = st.columns([1, 3])
                                 with cols[0]:
                                     if reco.get("poster_url"):
-                                        st.image(reco["poster_url"], width=150)
+                                        st.image(reco["poster_url"], use_container_width=True)
                                 with cols[1]:
                                     # Variables spécifiques à la reco
                                     reco_title = reco.get("title", "Titre inconnu")
@@ -343,14 +340,7 @@ def main_app():
                 key="chosen_movie_details"
             )
             
-            # 👉 Affiche le poster du film sélectionné AVANT la confirmation
-            selected_match = next(
-                (m for m in st.session_state["fuzzy_matches"] if m["title"] == chosen_movie), 
-                None
-            )
-            if selected_match and "poster_url" in selected_match:
-                st.image(selected_match["poster_url"], width=150, caption=chosen_movie)
-            
+
             if st.button("✅ Confirmer ce film"):
                 try:
                     response = requests.get(
@@ -363,7 +353,7 @@ def main_app():
                         col1, col2 = st.columns([1,2])
                         with col1:
                             if details.get("poster_url"):
-                                st.image(details["poster_url"], width=150)
+                                st.image(details["poster_url"],use_container_width=True)
                         with col2:
                             st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
                             st.write(f"**Genres :** {details['genres']}")
@@ -397,6 +387,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
