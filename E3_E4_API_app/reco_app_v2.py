@@ -336,15 +336,22 @@ def main_app():
         # Sélection du film
         if st.session_state.get("matches"):
             st.markdown("### Sélectionnez le film correct :")
-            for m in st.session_state["matches"]:
-                movie_id = m["movie_id"]
-                label = f"{m['title']} ({m.get('releaseYear', 'N/A')})"
-                key_btn = f"select_{movie_id}"
-                if st.session_state.get("selected_movie_id") == movie_id:
-                    st.button(f"✅ {label}", key=key_btn, disabled=True)
-                else:
-                    if st.button(label, key=key_btn):
-                        st.session_state["selected_movie_id"] = movie_id
+            options = [f"{m['title']}|{m['movie_id']}" 
+                       for m in st.session_state["matches"]]
+            
+            # Valeur sélectionnée par défaut
+            default_idx = 0
+            if st.session_state.get("selected_movie_id") is not None:
+                for i, opt in enumerate(options):
+                    if opt.endswith(f"|{st.session_state['selected_movie_id']}"):
+                        default_idx = i
+                        break
+        
+            selected = st.radio("Films correspondants :", options, index=default_idx)
+        
+            # Extraire movie_id
+            movie_id = int(selected.split("|")[1])
+            st.session_state["selected_movie_id"] = movie_id
         
         # Affichage des détails
         selected_id = st.session_state.get("selected_movie_id")
@@ -389,6 +396,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
