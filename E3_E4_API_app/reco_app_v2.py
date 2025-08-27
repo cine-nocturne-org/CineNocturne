@@ -245,6 +245,10 @@ def main_app():
                     st.error("❌ Erreur de connexion avec le serveur")
 
 
+
+
+
+
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
@@ -330,7 +334,6 @@ def main_app():
 
     except Exception as e:
         st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
-
 
     # ------------------------------
     # Onglet 3 : Plateformes dispo
@@ -440,9 +443,6 @@ def main_app():
                     st.error(response.json().get("detail", "Film non trouvé"))
             except requests.exceptions.RequestException:
                 st.error("❌ Erreur de connexion avec le serveur")
-
-
-
 
 
 
