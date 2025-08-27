@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 from urllib.parse import quote
-
+import traceback
 from requests.auth import HTTPBasicAuth
 
 API_URL = "https://cinenocturne.onrender.com/"
@@ -14,13 +14,13 @@ def login_page():
     """Affiche la page de connexion"""
     st.title("🔐 Connexion")
     st.markdown("---")
-    
+
     with st.form("login_form"):
         st.subheader("Veuillez vous connecter pour accéder à l'application")
         username = st.text_input("Nom d'utilisateur")
         password = st.text_input("Mot de passe", type="password")
         submit_button = st.form_submit_button("Se connecter")
-        
+
         if submit_button:
             if username and password:
                 # Test de connexion avec l'API
@@ -71,9 +71,6 @@ def main_app():
     # ------------------------------
     # Onglet 1 : Film vu + reco perso
     # ------------------------------
-    # ------------------------------
-    # Section "Film vu / Notation"
-    # ------------------------------
     with tab1:
         st.subheader("✨​​ Noter un film que vous avez vu")
 
@@ -82,7 +79,7 @@ def main_app():
 
         if st.button("Chercher", key="btn_search"):
             st.session_state["fuzzy_matches"] = None
-            st.session_state["chosen_film"] = None  # reset film choisi
+            st.session_state["chosen_film"] = None
             if film_input:
                 try:
                     response = requests.get(
@@ -101,7 +98,7 @@ def main_app():
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
 
-        # 2️⃣ Sélection du film (uniquement si recherche effectuée)
+        # 2️⃣ Sélection du film
         if st.session_state.get("fuzzy_matches"):
             matches_info = []
             for match in st.session_state["fuzzy_matches"]:
@@ -131,17 +128,16 @@ def main_app():
                 for col_idx, match in enumerate(row_matches):
                     with cols[col_idx]:
                         if match.get("poster"):
-                            st.image(match["poster"], width=120)
+                            st.image(match["poster"], width="stretch")
                         st.caption(match.get("title", "Titre inconnu"))
-                        unique_key = f"select_{match['movie_id']}"
-
+                        unique_key = f"select_{match['movie_id']}_{row}_{col_idx}"
                         if st.session_state.get("chosen_film") == match["title"]:
                             st.button("✅ Sélectionné", key=unique_key, disabled=True)
                         else:
                             if st.button("Sélectionner", key=unique_key):
                                 st.session_state["chosen_film"] = match["title"]
 
-        # 3️⃣ Notation (uniquement si film choisi)
+        # 3️⃣ Notation du film choisi uniquement
         chosen_film = st.session_state.get("chosen_film")
         if chosen_film:
             st.success(f"🎬 Film sélectionné : {chosen_film}")
@@ -167,7 +163,7 @@ def main_app():
                     detail = update_resp.json().get("detail", "Erreur inconnue")
                     st.error(f"❌ Échec : {detail}")
 
-        # 4️⃣ Recommandation (uniquement si film choisi)
+        # 4️⃣ Recommandations personnalisées (infos seulement sur les films recommandés)
         if chosen_film:
             st.subheader("🔍 Obtenir une recommandation personnalisée")
             if st.button("Me recommander un film", key="btn_reco"):
@@ -185,14 +181,28 @@ def main_app():
                                 cols = st.columns([1, 3])
                                 with cols[0]:
                                     if reco.get("poster_url"):
-                                        st.image(reco["poster_url"], width=150)
+                                        st.image(reco["poster_url"], width="stretch")
                                 with cols[1]:
-                                    st.markdown(f"### 🎥 {reco['title']} ({reco.get('releaseYear', 'N/A')})")
+                                    # Variables spécifiques à la reco
+                                    reco_title = reco.get("title", "Titre inconnu")
+                                    reco_year = reco.get("releaseYear")
+                                    reco_genres_raw = reco.get("genres", [])
+                                    if isinstance(reco_genres_raw, str):
+                                        reco_genres = [g.strip() for g in reco_genres_raw.split(",")]
+                                    elif isinstance(reco_genres_raw, list):
+                                        reco_genres = reco_genres_raw
+                                    else:
+                                        reco_genres = []
+                                    reco_platforms = reco.get("platforms", [])
+                                    reco_synopsis = reco.get("synopsis", "Pas de synopsis disponible.")
                                     score_pct = int(reco.get("pred_score", 0) * 100)
+
+                                    st.markdown(f"### 🎬 {reco_title} ({reco_year})")
+                                    st.markdown(f"### 🎬 {reco_title}")
                                     st.markdown(f"**Ce film est susceptible de vous plaire à {score_pct}%**")
-                                    st.write(f"**Genres :** {', '.join(reco.get('genres', [])) if reco.get('genres') else 'N/A'}")
-                                    st.write(f"**Plateformes disponibles :** {', '.join(reco.get('platforms', [])) if reco.get('platforms') else 'N/A'}")
-                                    st.write(reco.get('synopsis', 'Pas de synopsis disponible.'))
+                                    st.write(f"**Genres :** {', '.join(reco_genres) if reco_genres else 'N/A'}")
+                                    st.write(f"**Plateformes disponibles :** {', '.join(reco_platforms) if reco_platforms else 'Indisponible'}")
+                                    st.write(reco_synopsis)
                         else:
                             st.info("Aucune recommandation trouvée pour ce film")
                     else:
@@ -204,10 +214,12 @@ def main_app():
 
 
 
+
+
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
-    # 4. Suggestions aléatoires par genre et plateformes
+    # 4. Suggestions aléatoires par genre et plateformeswith tab2:
     with tab2:
         st.subheader("🎲 Suggestions aléatoires par genre")
         try:
@@ -231,11 +243,11 @@ def main_app():
                     st.session_state["current_movies"] = []
 
                 def fetch_random_movies():
-                    """Récupère de nouveaux films sans doublons"""
+                    """Récupère de nouveaux films sans doublons et complets"""
                     params = {
                         "genre": selected_genre,
                         "platforms": selected_platforms,
-                        "limit": 20  # en demander un peu plus pour éviter doublons
+                        "limit": 20
                     }
                     response = requests.get(
                         f"{API_URL}/random_movies/", 
@@ -244,13 +256,17 @@ def main_app():
                     )
                     if response.status_code == 200:
                         movies = response.json()
-                        # Filtrer ceux déjà vus
+                        # Filtrer ceux déjà vus et ceux incomplets
                         fresh_movies = [
-                            m for m in movies if m["title"] not in st.session_state["already_seen_movies"]
+                            m for m in movies
+                            if m["title"] not in st.session_state["already_seen_movies"]
+                            and m.get("poster_url")
+                            and m.get("synopsis")
+                            #and m.get("releaseYear")
                         ]
                         # En garder 10 max
                         fresh_movies = fresh_movies[:10]
-                        # Mémoriser
+                        # Mémoriser les titres pour éviter doublons
                         for m in fresh_movies:
                             st.session_state["already_seen_movies"].add(m["title"])
                         st.session_state["current_movies"] = fresh_movies
@@ -267,19 +283,35 @@ def main_app():
 
                     # Affichage
                     for movie in st.session_state["current_movies"]:
+                        poster = movie.get("poster_url")
+                        synopsis = movie.get("synopsis")
+                        year = movie.get("releaseYear", "N/A")
+
+                        # On n'affiche que si on a bien un poster et un synopsis
+                        if not poster or not synopsis:
+                            continue
+
                         cols = st.columns([1, 3])
                         with cols[0]:
-                            if movie.get("poster_url"):
-                                st.image(movie["poster_url"], use_container_width=True)
+                            st.image(poster, width="stretch")
                         with cols[1]:
-                            st.markdown(f"### 🎮 {movie['title']} ({movie['platform']})")
-                            st.write(f"**Genres :** {', '.join(movie['genres']) if movie.get('genres') else 'N/A'}")
-                            st.write(movie.get('synopsis', 'Pas de synopsis disponible.'))
+                            title = movie.get("title", "Titre inconnu")
+                            raw_genres = movie.get("genres", [])
+                            if isinstance(raw_genres, str):
+                                genres = [g.strip() for g in raw_genres.split(",")]
+                            elif isinstance(raw_genres, list):
+                                genres = raw_genres
+                            else:
+                                genres = []
+                            st.markdown(f"### 🎬 {title} ({year})")
+                            st.markdown(f"### 🎬 {title}")
+                            st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
+                            st.write(synopsis)
+
 
         except Exception as e:
             st.error(f"❌ Impossible de se connecter pour récupérer les genres : {e}")
-
-
+            st.text(traceback.format_exc())
 
 
     # ------------------------------
@@ -287,8 +319,9 @@ def main_app():
     # ------------------------------
     # 5. Plateformes disponibles pour un film
     with tab3:
-        st.subheader("📺​ Plateformes disponibles pour un film")
+        st.subheader("📺 Plateformes disponibles pour un film")
         film_details_title = st.text_input("Titre du film :", key="details_title")
+
         if st.button("🔍 Chercher correspondances", key="btn_fuzzy"):
             if film_details_title:
                 try:
@@ -311,39 +344,41 @@ def main_app():
             else:
                 st.warning("⚠️ Veuillez entrer un titre de film")
 
-    # --- Étape 2 : choix du film ---
-    if "fuzzy_matches" in st.session_state:
-        # Construire une liste lisible pour la selectbox
-        options = {f"{m['title']} (score: {m['score']}%)": m["movie_id"] for m in st.session_state["fuzzy_matches"]}
-        
-        chosen_label = st.selectbox("Films correspondants :", list(options.keys()), key="chosen_movie_details")
-        chosen_movie_id = options[chosen_label]  # On récupère l'ID correspondant
-
-        # --- Étape 3 : confirmation ---
-        if st.button("✅ Confirmer ce film"):
-            try:
-                response = requests.get(
-                    f"{API_URL}/movie-details/{chosen_movie_id}",
-                    auth=HTTPBasicAuth(USERNAME, PASSWORD)
-                )
-                if response.status_code == 200:
-                    details = response.json()
-                    st.success("✅ Détails du film trouvés !")
-                    if details.get("poster_url"):
-                        st.image(details["poster_url"], width=150)
-                    st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
-                    st.write(f"**Genres :** {details['genres']}")
-                    st.write(f"**Note :** {details['rating']}")
-                    st.write(f"**Plateformes disponibles :** {', '.join(details['platforms'])}")
-                    st.write(details['synopsis'])
-                else:
-                    st.error(response.json().get("detail", "Film non trouvé"))
-            except requests.exceptions.RequestException:
-                st.error("❌ Erreur de connexion avec le serveur")
+        # --- Étape 2 : choix du film ---
+        if "fuzzy_matches" in st.session_state:
+            chosen_movie = st.selectbox(
+                "Films correspondants :", 
+                [m["title"] for m in st.session_state["fuzzy_matches"]],  
+                key="chosen_movie_details"
+            )
 
 
+            if st.button("✅ Confirmer ce film"):
+                try:
+                    response = requests.get(
+                        f"{API_URL}/movie-details/{chosen_movie}",   
+                        auth=HTTPBasicAuth(USERNAME, PASSWORD)
+                    )
+                    if response.status_code == 200:
+                        details = response.json()
+                        st.success("✅ Détails du film trouvés !")
+                        col1, col2 = st.columns([1,2])
+                        with col1:
+                            if details.get("poster_url"):
+                                st.image(details["poster_url"], width="stretch")
+                        with col2:
+                            st.markdown(f"### 🎬 {details['title']} ({details['releaseYear']})")
+                            st.write(f"**Genres :** {details['genres']}")
+                            st.write(f"**Note :** {details['rating']}")
+                            st.write(f"**Plateformes disponibles :** {', '.join(details['platforms'])}")
+                            st.write(details['synopsis'])
+                    else:
+                        st.error(response.json().get("detail", "Film non trouvé"))
+                except requests.exceptions.RequestException:
+                    st.error("❌ Erreur de connexion avec le serveur")
 
 
+# -----------------------------------------------------------
 # Point d'entrée principal
 def main():
     """Point d'entrée principal de l'application"""
@@ -363,3 +398,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
