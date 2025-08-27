@@ -14,6 +14,7 @@ import joblib
 from sklearn.metrics.pairwise import cosine_similarity
 from rapidfuzz import process, fuzz 
 import unicodedata
+import os
 
 
 
@@ -30,14 +31,21 @@ engine = create_engine(DATABASE_URL)
 
 
 # --- Charger les objets ML ---
-xgb_model = joblib.load("model/xgb_classifier_model.joblib")
-mlb = joblib.load("model/mlb_model.joblib")
-scaler_year = joblib.load("model/scaler_year.joblib")
-nn_full = joblib.load("model/nn_full.joblib")
-reco_vectorizer = joblib.load("model/reco_vectorizer.joblib")
-svd_full = joblib.load("model/svd_model.joblib")
-tfidf_matrix = joblib.load("model/tfidf_matrix_full.joblib")
-movie_index_df = pd.read_csv("model/movie_index.csv")
+# Récupérer le chemin du dossier courant du fichier Python
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "model")
+
+# Charger les modèles
+xgb_model = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
+mlb = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
+scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
+nn_full = joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"))
+reco_vectorizer = joblib.load(os.path.join(MODEL_DIR, "reco_vectorizer.joblib"))
+svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
+tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
+
+# Charger le CSV
+movie_index_df = pd.read_csv(os.path.join(MODEL_DIR, "movie_index.csv"))
 
 
 # --- Charger la liste des films depuis la BDD au lancement ---
