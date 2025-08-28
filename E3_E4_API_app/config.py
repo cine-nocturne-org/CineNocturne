@@ -1,26 +1,30 @@
+# config.py
 import os
-from dotenv import load_dotenv
 import mlflow
 
-load_dotenv()
+# ------------------------------
+# PostgreSQL Render pour MLflow
+# ------------------------------
+DB_URL = "postgresql+psycopg2://mlflow_db_evzp_user:ZIG9DNZ2gWeqCOQ7SkjIM7cZI9tJcp53@dpg-d2o5rour433s73avu490-a.frankfurt-postgres.render.com/mlflow_db_evzp"
 
-RUN_MLFLOW = os.getenv("RUN_MLFLOW", "1")
+# Dossier local pour les artefacts (tu peux changer)
+import pathlib
+MLFLOW_ARTIFACT_LOCATION = str(pathlib.Path(__file__).parent / "mlflow_artifacts")
 
-if RUN_MLFLOW == "1":
-    # Backend pour stocker les runs localement (toujours)
-    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+# Crée le dossier artefacts s'il n'existe pas
+pathlib.Path(MLFLOW_ARTIFACT_LOCATION).mkdir(exist_ok=True)
 
-    exp_name = "louve_movies_monitoring"
+# ------------------------------
+# Configuration MLflow
+# ------------------------------
+mlflow.set_tracking_uri(DB_URL)
 
-    # Si S3 configuré correctement, utiliser S3 pour les artefacts
-    bucket = os.getenv("MLFLOW_S3_BUCKET")
-    endpoint = os.getenv("MLFLOW_S3_ENDPOINT_URL")
-    if bucket and endpoint:
-        artifact_location = f"s3://{bucket}@{endpoint}"
-        try:
-            mlflow.create_experiment(exp_name, artifact_location=artifact_location)
-        except mlflow.exceptions.MlflowException:
-            pass  # existe déjà
+# Créer l'expérience si elle n'existe pas
+EXPERIMENT_NAME = "louve_movies_monitoring"
+try:
+    mlflow.create_experiment(EXPERIMENT_NAME, artifact_location=MLFLOW_ARTIFACT_LOCATION)
+except mlflow.exceptions.MlflowException:
+    # Si l'expérience existe déjà
+    pass
 
-    # Toujours définir l'expérience
-    mlflow.set_experiment(exp_name)
+mlflow.set_experiment(EXPERIMENT_NAME)
