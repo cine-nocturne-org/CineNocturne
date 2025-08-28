@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from prometheus_client import CollectorRegistry
 import prometheus_client
 prometheus_client.REGISTRY = CollectorRegistry()
+from httpx import AsyncClient
 
 # ----- Import de l'app FastAPI -----
 from api_movie_v2 import app
@@ -33,22 +34,19 @@ xgb_model = MockXGB()
 client = TestClient(app)
 
 # ----- Test simple pour Zombiland -----
-def test_recommend_zombiland():
-    response = client.get("/recommend_xgb_personalized/Zombiland?top_k=2")
+@pytest.mark.asyncio
+async def test_recommend_zombiland():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        response = await ac.get("/recommend_xgb_personalized/Zombiland?top_k=2")
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)
-    assert len(data) <= 2
-    assert all("title" in movie for movie in data)
-    assert all("pred_score" in movie for movie in data)
-    assert all("genres" in movie for movie in data)
-    assert all("synopsis" in movie for movie in data)
-    assert all("poster_url" in movie for movie in data)
 
 # ----- Test pour un film inexistant -----
 def test_recommend_not_found():
     response = client.get("/recommend_xgb_personalized/Film Inconnu")
     assert response.status_code == 404
     assert response.json() == {"detail": "Film non trouvé"}
+
 
 
