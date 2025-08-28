@@ -1,0 +1,15 @@
+artifact_uri: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/Github/CineNocturne/E3_E4_API_app/mlruns/371991632364703291/7d32ec55407640b3a80e9e568cef2be6/artifacts
+deleted_time: 1756345657684
+end_time: 1756344758107
+entry_point_name: ''
+experiment_id: '371991632364703291'
+lifecycle_stage: deleted
+run_id: 7d32ec55407640b3a80e9e568cef2be6
+run_name: Gradient_Boosting
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756343633446
+status: 4
+tags: []
+user_id: loulo

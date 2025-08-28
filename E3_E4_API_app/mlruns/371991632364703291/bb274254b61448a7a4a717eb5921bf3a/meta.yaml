@@ -1,0 +1,15 @@
+artifact_uri: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/Github/CineNocturne/E3_E4_API_app/mlruns/371991632364703291/bb274254b61448a7a4a717eb5921bf3a/artifacts
+deleted_time: 1756342862144
+end_time: 1756342051553
+entry_point_name: ''
+experiment_id: '371991632364703291'
+lifecycle_stage: deleted
+run_id: bb274254b61448a7a4a717eb5921bf3a
+run_name: xgb_like_dislike
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756341997771
+status: 3
+tags: []
+user_id: loulo

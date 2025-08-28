@@ -1,0 +1,22 @@
+artifact_path: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/Github/CineNocturne/E3_E4_API_app/mlruns/371991632364703291/models/m-14f4954fce314277801db95f42e0b4ae/artifacts
+flavors:
+  python_function:
+    data: model.xgb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.xgboost
+    python_version: 3.12.7
+  xgboost:
+    code: null
+    data: model.xgb
+    model_class: xgboost.sklearn.XGBClassifier
+    model_format: xgb
+    xgb_version: 3.0.2
+mlflow_version: 3.3.1
+model_id: m-14f4954fce314277801db95f42e0b4ae
+model_size_bytes: 446958
+model_uuid: m-14f4954fce314277801db95f42e0b4ae
+prompts: null
+run_id: cbb7f51001f6466b8ba1620cbaf8f0fb
+utc_time_created: '2025-08-28 00:51:25.235041'

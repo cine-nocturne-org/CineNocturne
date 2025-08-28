@@ -1,0 +1,22 @@
+artifact_path: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/Github/CineNocturne/E3_E4_API_app/mlruns/371991632364703291/models/m-84042ae58d454e83809102c1eae66e9c/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.12.7
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.6.1
+mlflow_version: 3.3.1
+model_id: m-84042ae58d454e83809102c1eae66e9c
+model_size_bytes: 37847
+model_uuid: m-84042ae58d454e83809102c1eae66e9c
+prompts: null
+run_id: e71c902cda4d4bc397641b002bf1d1a7
+utc_time_created: '2025-08-28 01:33:37.925553'
