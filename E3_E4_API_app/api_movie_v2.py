@@ -213,7 +213,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     all_features = np.array(features_list)
     pred_scores = xgb_model.predict_proba(all_features)[:, 1]
 
-    # 🔥 5️⃣ Normalisation min-max sur les scores
+    # 🔥 Normalisation min-max sur les scores
     min_score, max_score = pred_scores.min(), pred_scores.max()
     if max_score > min_score:
         pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score)
@@ -226,16 +226,29 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     # 7️⃣ Préparer réponse
     top_recos_list = []
     for idx_top in top_indices:
-        movie = movies_dict[candidate_titles[idx_top]]  # mapping titre → détails
+        movie = movies_dict[candidate_titles[idx_top]]
+    
+        # Récupérer la note utilisateur et la note globale
+        user_rating = movie.get("user_rating") or 0.0
+        movie_rating = movie.get("rating") or 5.0
+    
+        # Calcul score final pondéré
+        score_final = (
+            0.6 * pred_scores_scaled[idx_top] +
+            0.25 * (user_rating / 10) +
+            0.15 * (movie_rating / 10)
+        )
+    
         top_recos_list.append({
             "title": movie["title"],
             "poster_url": movie.get("poster_url"),
             "genres": movie.get("genres"),
             "synopsis": movie.get("synopsis"),
-            "pred_score": float(pred_scores_scaled[idx_top])
+            "pred_score": float(score_final)  # 🔹 score final pondéré
         })
 
     return top_recos_list
+
 
 
 # ------------------------------
@@ -539,5 +552,6 @@ async def download_movie_details():
 #             "xgb_score": float(xgb_scores[np.where(filtered_indices==i)][0]),
 #             "combined_score": float(combined_score[np.where(filtered_indices==i)][0])
 #         })
+
 
 #     return result
