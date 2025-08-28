@@ -199,9 +199,9 @@ def main_app():
 
                                     st.markdown(f"### 🎬 {reco_title}")                                    
                                     st.markdown(f"**Ce film est susceptible de vous plaire à {score_pct}%**")
-                                    st.write(f"**Année :** {reco['releaseYear']}")
+                                    #st.write(f"**Année :** {reco['releaseYear']}")
                                     st.write(f"**Genres :** {', '.join(reco_genres) if reco_genres else 'N/A'}")
-                                    st.write(f"**Plateformes disponibles :** {', '.join(reco['platforms'])}")
+                                    #st.write(f"**Plateformes disponibles :** {', '.join(reco['platforms'])}")
                                     st.write(reco_synopsis)
                         else:
                             st.info("Aucune recommandation trouvée pour ce film")
@@ -304,7 +304,7 @@ def main_app():
                             else:
                                 genres = []
                             st.markdown(f"### 🎬 {title}")
-                            st.wite(f"**Année :** {movie['releaseYear']}")
+                            #st.wite(f"**Année :** {movie['releaseYear']}")
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                             st.write(synopsis)
 
@@ -398,6 +398,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
