@@ -1,3 +1,6 @@
+# ------------------------------
+# Imports
+# ------------------------------
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import create_engine, text
@@ -5,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Optional
 from pydantic import BaseModel
 import random
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 import csv
 import io
 import pandas as pd
@@ -15,25 +18,59 @@ from sklearn.metrics.pairwise import cosine_similarity
 from rapidfuzz import process, fuzz 
 import unicodedata
 import os
-
-
-
-app = FastAPI(title="🎬 Louve Movies API")
-# cmd lancement : uvicorn api_movie_v2:app --reload
-
-
+import logging
+from prometheus_client import Counter, Histogram, generate_latest
 
 # ------------------------------
-# Configuration de la BDD
+# App FastAPI
+# ------------------------------
+app = FastAPI(title="🎬 Louve Movies API")
+
+# ------------------------------
+# Logger Python
+# ------------------------------
+logger = logging.getLogger("louve_logger")
+logger.setLevel(logging.INFO)
+fh = logging.FileHandler("louve_movies.log")
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+
+# ------------------------------
+# Prometheus metrics
+# ------------------------------
+recommend_counter = Counter('recommend_requests_total', 'Total des recommandations')
+update_rating_counter = Counter('update_rating_requests_total', 'Total des mises à jour de note')
+error_counter = Counter('api_errors_total', 'Total des erreurs API')
+response_time_hist = Histogram('recommend_response_seconds', 'Temps de réponse endpoint recommandation')
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type="text/plain")
+
+# ------------------------------
+# Auth HTTP Basic
+# ------------------------------
+USERNAME = "user"
+PASSWORD = "password"
+security = HTTPBasic()
+
+def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    if credentials.username != USERNAME or credentials.password != PASSWORD:
+        raise HTTPException(
+            status_code=401,
+            detail="Nom d'utilisateur ou mot de passe invalide",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+# ------------------------------
+# BDD & ML (unchanged)
 # ------------------------------
 DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
 engine = create_engine(DATABASE_URL)
 
-
-# --- Charger les objets ML ---
-# Récupérer le chemin du dossier courant du fichier Python
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # dossier où est le fichier Python
-MODEL_DIR = os.path.join(BASE_DIR, "model")            # dossier model relatif au script
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "model")
 
 xgb_model = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
 mlb = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
@@ -44,13 +81,10 @@ svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
 tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
 movie_index_df = pd.read_csv(os.path.join(MODEL_DIR, "movie_index.csv"))
 
-
-# --- Charger la liste des films depuis la BDD au lancement ---
 with engine.connect() as conn:
     rows = conn.execute(
         text("SELECT movie_id, title, genres, release_year, synopsis, poster_url FROM movies")
-    ).mappings().all()  # 👈 ça renvoie des dicts
-
+    ).mappings().all()
 
 movies = []
 titles = []
@@ -64,11 +98,8 @@ for r in rows:
     genres_list_all.append(genres_list)
     years.append(r["release_year"] if r["release_year"] else 2000)
 
-# Encodage genres
 genres_encoded_matrix = mlb.transform(genres_list_all)
 years_scaled = scaler_year.transform(np.array([[y] for y in years]))
-
-# Création d'un dict pour accès rapide par titre
 movies_dict = {movie["title"]: movie for movie in movies}
 
 # ------------------------------
@@ -94,76 +125,56 @@ PLATFORM_TABLES = {
     "apple": "apple"
 }
 
-# ------------------------------
-# Authentification HTTP Basic
-# ------------------------------
-USERNAME = "user"
-PASSWORD = "password"
-security = HTTPBasic()
-
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.username != USERNAME or credentials.password != PASSWORD:
-        raise HTTPException(
-            status_code=401,
-            detail="Nom d'utilisateur ou mot de passe invalide",
-            headers={"WWW-Authenticate": "Basic"},
-        )
 
 # ------------------------------
-# Modèle Pydantic pour mise à jour de progression
+# Pydantic Model
 # ------------------------------
 class RatingUpdate(BaseModel):
     title: str
     rating: float
 
 # ------------------------------
-# Route: Mise à jour de progression
+# Endpoint /update_rating avec logging
 # ------------------------------
 @app.post("/update_rating", dependencies=[Depends(verify_credentials)])
 async def update_rating(payload: RatingUpdate):
-    title = payload.title
-    rating = payload.rating
+    update_rating_counter.inc()
+    logger.info(f"Mise à jour note film '{payload.title}' -> {payload.rating}")
 
-    if rating < 0 or rating > 10:
+    if payload.rating < 0 or payload.rating > 10:
         raise HTTPException(status_code=400, detail="La note doit être comprise entre 0 et 10.")
-
     try:
         with engine.begin() as conn:
-            # Vérifie si la colonne existe
             check_col = conn.execute(text("""
                 SELECT COLUMN_NAME 
                 FROM INFORMATION_SCHEMA.COLUMNS 
                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies' AND COLUMN_NAME = 'user_rating'
             """)).fetchone()
-
             if not check_col:
                 conn.execute(text("ALTER TABLE movies ADD COLUMN user_rating FLOAT"))
-
-            # Mise à jour
             result = conn.execute(
                 text("UPDATE movies SET user_rating = :rating WHERE title = :title"),
-                {"rating": rating, "title": title}
+                {"rating": payload.rating, "title": payload.title}
             )
-
             if result.rowcount == 0:
-                raise HTTPException(status_code=404, detail=f"Film '{title}' non trouvé.")
-
-        return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
-
+                raise HTTPException(status_code=404, detail=f"Film '{payload.title}' non trouvé.")
+        return {"message": f"La note {payload.rating} a été enregistrée pour le film '{payload.title}'."}
     except HTTPException as e:
-        # ✅ On relaisse passer les HTTPException (404, 400, etc.)
         raise e
-    except SQLAlchemyError as e:
-        raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+        logger.error(f"Erreur update_rating: {e}")
+        error_counter.inc()
+        raise HTTPException(status_code=500, detail=str(e))
     
-# # ------------------------------
-# # Route: test reco xgb
-# # ------------------------------
+# ------------------------------
+# Endpoint /recommend_xgb_personalized avec logging et histogram
+# ------------------------------
 @app.get("/recommend_xgb_personalized/{title}")
+@response_time_hist.time()
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    # 1️⃣ Chercher le film
+    recommend_counter.inc()
+    logger.info(f"Recommandation demandée pour '{title}' avec top_k={top_k}")
+
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
