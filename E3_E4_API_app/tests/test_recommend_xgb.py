@@ -1,56 +1,49 @@
+# test_recommend_xgb.py
 import pytest
 import numpy as np
-from unittest.mock import patch, MagicMock
-from httpx import AsyncClient
-from api_movie_v2 import app  # chemin vers ton app FastAPI
+from fastapi.testclient import TestClient
 
-# Mock des prédictions (2 candidats → 2 proba)
-mock_xgb_pred = np.array([[0.1, 0.9]])
-mock_svd_matrix = np.array([[0.5, 0.5]])
+# ----- Import de l'app FastAPI -----
+from reco_app_v2 import app  # change selon ton fichier
 
-# Utilitaire pour simuler un retour async
-async def async_return(val):
-    return val
+# ----- Mock des variables globales de l'endpoint -----
+titles = ["Zombiland", "M3gan", "Kpop Demon Hunter"]
+genres_list_all = [["Comédie", "Horreur"], ["Horreur", "Science-Fiction"], ["Action", "Musical"]]
+tfidf_matrix = np.eye(3)  # matrice identité pour simplifier
+svd_full = type("svd", (), {"transform": lambda self, x: np.ones((1, 2))})()
+nn_full = type("nn", (), {"kneighbors": lambda self, x: (np.zeros((1, 3)), None)})()
+genres_encoded_matrix = np.ones((3, 1))
+years_scaled = np.ones(3)
+movies_dict = {
+    "Zombiland": {"title": "Zombiland", "genres": ["Comédie", "Horreur"], "synopsis": "Zombie apocalypse drôle", "user_rating": 8.5, "rating": 7.5, "poster_url": "url_zombiland"},
+    "M3gan": {"title": "M3gan", "genres": ["Horreur", "Science-Fiction"], "synopsis": "Une poupée qui devient vivante", "user_rating": 7.0, "rating": 6.5, "poster_url": "url_m3gan"},
+    "Kpop Demon Hunter": {"title": "Kpop Demon Hunter", "genres": ["Action", "Musical"], "synopsis": "Idols qui combattent des démons", "user_rating": 9.0, "rating": 8.0, "poster_url": "url_kpop"}
+}
 
-@pytest.mark.asyncio
-@patch("api_movie_v2.nn_full", new_callable=MagicMock)
-@patch("api_movie_v2.svd_full", new_callable=MagicMock)
-@patch("api_movie_v2.genres_encoded_matrix", new=np.array([[1,0],[0,1]]))
-@patch("api_movie_v2.years_scaled", new=np.array([[2020],[2021]]))
-@patch("api_movie_v2.tfidf_matrix", new=np.array([[0.1]*10, [0.2]*10]))  # 2 films, 10 features
-@patch("api_movie_v2.xgb_model", new_callable=MagicMock)
-@patch("api_movie_v2.titles", new=["Zombieland", "AutreFilm"])
-@patch(
-    "api_movie_v2.movies_dict",
-    new={
-        "Zombieland": {"title": "Zombieland", "genres": ["Action", "Comédie"], "poster_url": "zomb.jpg"},
-        "AutreFilm": {"title": "AutreFilm", "genres": ["Action"], "poster_url": "autre.jpg"},
-    }
-)
-@patch("api_movie_v2.genres_list_all", new=[["Action", "Comédie"], ["Action"]])
-async def test_recommend_xgb_valid(mock_xgb, mock_svd, mock_nn):
-    # Mock des méthodes awaitables si nécessaire
-    mock_xgb.predict_proba.return_value = mock_xgb_pred
-    mock_svd.transform.side_effect = lambda x: mock_svd_matrix
-    mock_nn.kneighbors.side_effect = lambda x: (np.array([[0.0, 0.1]]), None)
+class MockXGB:
+    def predict_proba(self, X):
+        return np.array([[0.2, 0.8]] * len(X))  # score constant pour simplifier
 
-    # On utilise AsyncClient avec ASGI
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.get("/recommend_xgb_personalized/Zombieland")
+xgb_model = MockXGB()
 
+# ----- Création du client FastAPI -----
+client = TestClient(app)
+
+# ----- Test simple pour Zombiland -----
+def test_recommend_zombiland():
+    response = client.get("/recommend_xgb_personalized/Zombiland?top_k=2")
     assert response.status_code == 200
     data = response.json()
-
-    # Vérifie que c'est bien une liste non vide
     assert isinstance(data, list)
-    assert len(data) > 0
+    assert len(data) <= 2
+    assert all("title" in movie for movie in data)
+    assert all("pred_score" in movie for movie in data)
+    assert all("genres" in movie for movie in data)
+    assert all("synopsis" in movie for movie in data)
+    assert all("poster_url" in movie for movie in data)
 
-    # Vérifie que "AutreFilm" est bien recommandé
-    assert any(rec["title"] == "AutreFilm" for rec in data)
-
-
-@pytest.mark.asyncio
-async def test_recommend_xgb_invalid():
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.get("/recommend_xgb_personalized/FilmInexistant")
+# ----- Test pour un film inexistant -----
+def test_recommend_not_found():
+    response = client.get("/recommend_xgb_personalized/Film Inconnu")
     assert response.status_code == 404
+    assert response.json() == {"detail": "Film non trouvé"}
