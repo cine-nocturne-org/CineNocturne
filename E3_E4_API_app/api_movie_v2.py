@@ -143,10 +143,13 @@ async def update_rating(payload: RatingUpdate):
 
         return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
 
+    except HTTPException:  # ⚡ On laisse passer le 404
+        raise
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 # ------------------------------
 # Route: Recommandation XGB personnalisée
@@ -447,78 +450,3 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
-
-
-# ------------------------------
-# Route: Debug de recommendation
-# ------------------------------
-# @app.get("/recommend_debug/{title}", dependencies=[Depends(verify_credentials)])
-# async def recommend_debug(title: str, top_k: int = 5):
-#     """
-#     Recommandations debug : combine TF-IDF cosine similarity + XGB score.
-#     Retourne top_k films similaires avec tous les détails.
-#     """
-
-#     # 1️⃣ Chercher le film
-#     matches = movie_index_df[movie_index_df["title"].str.lower() == title.lower()]
-#     if matches.empty:
-#         raise HTTPException(status_code=404, detail=f"Film '{title}' introuvable")
-#     idx = matches.index[0]
-
-#     # 2️⃣ Cosine similarity
-#     cosine_sim = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
-
-#     # Exclure le film lui-même
-#     mask = np.arange(len(cosine_sim)) != idx
-#     filtered_indices = np.arange(len(cosine_sim))[mask]
-#     cosine_sim_filtered = cosine_sim[mask]
-
-#     # 3️⃣ Calcul XGB score uniquement pour les films filtrés
-#     def build_xgb_features(i: int) -> np.ndarray:
-#         svd_vec = svd_full.transform(tfidf_matrix[i])
-#         nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
-#         neighbor_mean = (1 - nn_distances[0][1:]).mean()
-#         neighbor_max = (1 - nn_distances[0][1:]).max()
-#         neighbor_min = (1 - nn_distances[0][1:]).min()
-#         neighbor_std = (1 - nn_distances[0][1:]).std()
-#         feature_vec = np.hstack([
-#             svd_vec[0],
-#             genres_encoded_matrix[i],
-#             years_scaled[i],
-#             neighbor_mean,
-#             neighbor_max,
-#             neighbor_min,
-#             neighbor_std
-#         ])
-#         return feature_vec
-
-#     xgb_features = np.array([build_xgb_features(i) for i in filtered_indices])
-#     xgb_scores = xgb_model.predict_proba(xgb_features)[:, 1]
-
-#     # 4️⃣ Combinaison des scores
-#     combined_score = (cosine_sim_filtered + xgb_scores) / 2
-
-#     # 5️⃣ Sélection top_k
-#     top_idx = np.argsort(combined_score)[-top_k:][::-1]
-#     top_indices = filtered_indices[top_idx]
-
-#     # 6️⃣ Construire la réponse
-#     result = []
-#     for i in top_indices:
-#         movie = movies[i]
-#         result.append({
-#             "movie_id": movie["movie_id"],
-#             "title": movie["title"],
-#             "genres": movie["genres"],
-#             "releaseYear": movie["release_year"],
-#             "synopsis": movie["synopsis"],
-#             "poster_url": movie["poster_url"],
-#             "similarity": float(cosine_sim[i]),
-#             "xgb_score": float(xgb_scores[np.where(filtered_indices==i)][0]),
-#             "combined_score": float(combined_score[np.where(filtered_indices==i)][0])
-#         })
-
-
-#     return result
-
