@@ -17,6 +17,8 @@ import os
 import csv
 from datetime import datetime
 import os
+import mlflow
+import config
 
 app = FastAPI(title="🎬 Louve Movies API")
 
@@ -166,74 +168,75 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    chosen_genres = set(genres_list_all[idx])
+    # --- Début MLflow run ---
+    with mlflow.start_run(run_name=f"recommend_{title}") as run:
+        chosen_genres = set(genres_list_all[idx])
 
-    # Cosine similarity TF-IDF
-    vec = tfidf_matrix[idx]
-    if vec.ndim == 1:
-        vec = vec.reshape(1, -1)
-    cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
-    cosine_sim[idx] = -1  # Exclure le film lui-même
+        vec = tfidf_matrix[idx].reshape(1, -1)
+        cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
+        cosine_sim[idx] = -1  # exclure le film lui-même
 
-    # Top 50 candidats
-    candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
-    candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
+        candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
+        candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
 
-    features_list = []
-    candidate_titles = []
+        features_list = []
+        candidate_titles = []
 
-    for i in candidate_indices:
-        svd_vec = svd_full.transform(tfidf_matrix[i])
-        nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
-        neighbor_mean = (1 - nn_distances[0][1:]).mean()
-        neighbor_max = (1 - nn_distances[0][1:]).max()
-        neighbor_min = (1 - nn_distances[0][1:]).min()
-        neighbor_std = (1 - nn_distances[0][1:]).std()
+        for i in candidate_indices:
+            svd_vec = svd_full.transform(tfidf_matrix[i])
+            nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
+            neighbor_mean = (1 - nn_distances[0][1:]).mean()
+            neighbor_max = (1 - nn_distances[0][1:]).max()
+            neighbor_min = (1 - nn_distances[0][1:]).min()
+            neighbor_std = (1 - nn_distances[0][1:]).std()
 
-        feature_vec = np.hstack([
-            svd_vec[0],
-            genres_encoded_matrix[i],
-            years_scaled[i],
-            neighbor_mean,
-            neighbor_max,
-            neighbor_min,
-            neighbor_std
-        ])
-        features_list.append(feature_vec)
-        candidate_titles.append(titles[i])
+            feature_vec = np.hstack([
+                svd_vec[0],
+                genres_encoded_matrix[i],
+                years_scaled[i],
+                neighbor_mean,
+                neighbor_max,
+                neighbor_min,
+                neighbor_std
+            ])
+            features_list.append(feature_vec)
+            candidate_titles.append(titles[i])
 
-    if not features_list:
-        return []
+        if not features_list:
+            return []
 
-    all_features = np.array(features_list)
-    pred_scores = xgb_model.predict_proba(all_features)[:, 1]
+        all_features = np.array(features_list)
+        pred_scores = xgb_model.predict_proba(all_features)[:, 1]
 
-    # Normalisation min-max
-    min_score, max_score = pred_scores.min(), pred_scores.max()
-    if max_score > min_score:
-        pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score)
-    else:
-        pred_scores_scaled = np.ones_like(pred_scores)
+        # Normalisation
+        min_score, max_score = pred_scores.min(), pred_scores.max()
+        pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score) if max_score > min_score else np.ones_like(pred_scores)
 
-    # Top k
-    top_indices = np.argsort(pred_scores_scaled)[::-1][:top_k]
+        top_indices = np.argsort(pred_scores_scaled)[::-1][:top_k]
 
-    top_recos_list = []
-    for idx_top in top_indices:
-        movie = movies_dict[candidate_titles[idx_top]]
-        user_rating = movie.get("user_rating") or 0.0
-        movie_rating = movie.get("rating") or 5.0
-        score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
-        top_recos_list.append({
-            "title": movie["title"],
-            "poster_url": movie.get("poster_url"),
-            "genres": movie.get("genres"),
-            "synopsis": movie.get("synopsis"),
-            "pred_score": float(score_final)
-        })
+        top_recos_list = []
+        for idx_top in top_indices:
+            movie = movies_dict[candidate_titles[idx_top]]
+            user_rating = movie.get("user_rating") or 0.0
+            movie_rating = movie.get("rating") or 5.0
+            score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
+            top_recos_list.append({
+                "title": movie["title"],
+                "poster_url": movie.get("poster_url"),
+                "genres": movie.get("genres"),
+                "synopsis": movie.get("synopsis"),
+                "pred_score": float(score_final)
+            })
+
+        # --- Log dans MLflow ---
+        mlflow.log_param("input_title", title)
+        mlflow.log_param("top_k", top_k)
+        mlflow.log_metric("max_score", float(pred_scores_scaled.max()))
+        mlflow.log_metric("min_score", float(pred_scores_scaled.min()))
+        mlflow.log_text(str([r["title"] for r in top_recos_list]), "top_recommended_titles.txt")
 
     return top_recos_list
-
+    
 # ------------------------------
 # Route: Fuzzy match
 # ------------------------------
@@ -455,5 +458,6 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
