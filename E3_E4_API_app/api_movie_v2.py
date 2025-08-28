@@ -18,7 +18,8 @@ import csv
 from datetime import datetime
 import os
 import mlflow
-import config
+from E3_E4_API_app import config
+
 
 app = FastAPI(title="🎬 Louve Movies API")
 
@@ -458,6 +459,7 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
