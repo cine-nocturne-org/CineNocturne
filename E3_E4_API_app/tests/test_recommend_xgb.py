@@ -27,24 +27,25 @@ mock_svd_matrix = np.array([[0.5, 0.5]])
 @patch("api_movie_v2.genres_list_all", new=[["Action", "Comédie"], ["Action"]])
 def test_recommend_xgb_valid(mock_xgb, mock_svd, mock_nn):
     # Mock des méthodes
-    mock_xgb.predict_proba.return_value = mock_xgb_pred
-    mock_svd.transform.return_value = mock_svd_matrix
-    # Ici on simule la distance NN pour 2 films
-    mock_nn.kneighbors.return_value = (np.array([[0.0, 0.1]]), None)
+    mock_xgb.predict_proba.return_value = np.array([
+        [0.1, 0.9],
+        [0.3, 0.7]
+    ])
+    mock_svd.transform.return_value = np.array([[0.5, 0.5]])
+    # On simule 3 voisins pour être cohérent
+    mock_nn.kneighbors.return_value = (np.array([[0.0, 0.1, 0.2]]), None)
 
-    # Appel de l'endpoint
     response = client.get("/recommend_xgb_personalized/Zombieland")
     assert response.status_code == 200
     data = response.json()
 
-    # Vérifie que c'est bien une liste non vide
     assert isinstance(data, list)
     assert len(data) > 0
-
-    # Vérifie que "AutreFilm" est bien recommandé
     assert any(rec["title"] == "AutreFilm" for rec in data)
+
 
 # Test d’entrée invalide
 def test_recommend_xgb_invalid():
     response = client.get("/recommend_xgb_personalized/FilmInexistant")
     assert response.status_code == 404
+
