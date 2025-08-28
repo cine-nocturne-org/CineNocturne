@@ -19,10 +19,20 @@ from datetime import datetime
 import os
 import mlflow
 from E3_E4_API_app import config
+import logging
+
+# Configuration du logger (mettre ça en début de fichier)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 app = FastAPI(title="🎬 Louve Movies API")
 
+mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
+mlflow.set_experiment("louve_movies_monitoring")
 
 # ------------------------------
 # Configuration BDD
@@ -171,6 +181,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
     # --- Début MLflow run ---
     with mlflow.start_run(run_name=f"recommend_{title}") as run:
+        logger.info(f"MLflow run ID: {run.info.run_id}")
+    
         chosen_genres = set(genres_list_all[idx])
 
         vec = tfidf_matrix[idx].reshape(1, -1)
@@ -459,6 +471,7 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
