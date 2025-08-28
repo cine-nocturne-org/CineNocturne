@@ -1,6 +1,0 @@
-artifact_location: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/641294385090415648
-creation_time: 1756194357923
-experiment_id: '641294385090415648'
-last_update_time: 1756194357923
-lifecycle_stage: active
-name: movies_reco_classification

@@ -1,6 +1,0 @@
-artifact_location: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/mlruns/936243030446123288
-creation_time: 1756192625363
-experiment_id: '936243030446123288'
-last_update_time: 1756192625363
-lifecycle_stage: active
-name: movies_reco_pipeline
