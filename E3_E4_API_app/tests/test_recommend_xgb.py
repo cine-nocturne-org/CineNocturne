@@ -2,9 +2,12 @@
 import pytest
 import numpy as np
 from fastapi.testclient import TestClient
+from prometheus_client import CollectorRegistry
+import prometheus_client
+prometheus_client.REGISTRY = CollectorRegistry()
 
 # ----- Import de l'app FastAPI -----
-from E3_E4_API_app.api_movie_v2 import app
+from api_movie_v2 import app
 
 # ----- Mock des variables globales de l'endpoint -----
 titles = ["Zombiland", "M3gan", "Kpop Demon Hunter"]
@@ -47,4 +50,5 @@ def test_recommend_not_found():
     response = client.get("/recommend_xgb_personalized/Film Inconnu")
     assert response.status_code == 404
     assert response.json() == {"detail": "Film non trouvé"}
+
 
