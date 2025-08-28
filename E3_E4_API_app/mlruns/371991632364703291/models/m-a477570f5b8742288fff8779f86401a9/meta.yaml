@@ -1,0 +1,10 @@
+artifact_location: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/Github/CineNocturne/E3_E4_API_app/mlruns/371991632364703291/models/m-a477570f5b8742288fff8779f86401a9/artifacts
+creation_timestamp: 1756343402300
+experiment_id: '371991632364703291'
+last_updated_timestamp: 1756343407687
+model_id: m-a477570f5b8742288fff8779f86401a9
+model_type: null
+name: Logistic_Regression_Baseline_model
+source_run_id: cf43c9986d144120b823cec2970c6eb4
+status: 2
+status_message: null

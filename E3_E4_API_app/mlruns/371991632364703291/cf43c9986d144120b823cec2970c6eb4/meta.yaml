@@ -1,0 +1,14 @@
+artifact_uri: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/Github/CineNocturne/E3_E4_API_app/mlruns/371991632364703291/cf43c9986d144120b823cec2970c6eb4/artifacts
+end_time: 1756343407707
+entry_point_name: ''
+experiment_id: '371991632364703291'
+lifecycle_stage: active
+run_id: cf43c9986d144120b823cec2970c6eb4
+run_name: Logistic_Regression_Baseline
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1756343394998
+status: 3
+tags: []
+user_id: loulo

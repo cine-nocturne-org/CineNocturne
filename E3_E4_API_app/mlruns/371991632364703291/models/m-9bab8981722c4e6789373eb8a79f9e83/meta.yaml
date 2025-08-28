@@ -1,0 +1,10 @@
+artifact_location: file:///c:/Users/loulo/Documents/Simplon/Certifications/E1_E3_E4/Github/CineNocturne/E3_E4_API_app/mlruns/371991632364703291/models/m-9bab8981722c4e6789373eb8a79f9e83/artifacts
+creation_timestamp: 1756342037602
+experiment_id: '371991632364703291'
+last_updated_timestamp: 1756342051530
+model_id: m-9bab8981722c4e6789373eb8a79f9e83
+model_type: null
+name: xgb_like_dislike_model
+source_run_id: bb274254b61448a7a4a717eb5921bf3a
+status: 2
+status_message: null
