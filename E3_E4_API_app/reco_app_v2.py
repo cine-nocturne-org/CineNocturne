@@ -25,7 +25,7 @@ def login_page():
             if username and password:
                 # Test de connexion avec l'API
                 try:
-                    test_response = requests.get(f"{API_URL}/genres/", auth=HTTPBasicAuth(username, password), timeout=5)
+                    test_response = requests.get(f"{API_URL}/genres/", auth=HTTPBasicAuth(username, password), timeout=30)
                     if test_response.status_code == 200:
                         # Connexion réussie - stocker les infos dans la session
                         st.session_state.authenticated = True
@@ -398,4 +398,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
