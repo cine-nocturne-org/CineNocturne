@@ -276,21 +276,16 @@ def main_app():
                     st.session_state["already_seen_movies"].clear()
                     fetch_random_movies()
 
-                # --- Bouton pour nouvelles suggestions ---
+                # --- Affichage des films ---
                 if st.session_state["current_movies"]:
-                    if st.button("🔄 Proposer d'autres films"):
-                        fetch_random_movies()
-
-                    # Affichage
                     for movie in st.session_state["current_movies"]:
                         poster = movie.get("poster_url")
                         synopsis = movie.get("synopsis")
                         year = movie.get("releaseYear", "N/A")
-
-                        # On n'affiche que si on a bien un poster et un synopsis
+                
                         if not poster or not synopsis:
                             continue
-
+                
                         cols = st.columns([1, 3])
                         with cols[0]:
                             st.image(poster, width="stretch")
@@ -304,9 +299,13 @@ def main_app():
                             else:
                                 genres = []
                             st.markdown(f"### 🎬 {title}")
-                            #st.wite(f"**Année :** {movie['releaseYear']}")
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                             st.write(synopsis)
+                
+                    # --- Bouton pour nouvelles suggestions après l'affichage ---
+                    if st.button("🔄 Proposer d'autres films"):
+                        fetch_random_movies()
+
 
 
         except Exception as e:
@@ -398,6 +397,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
