@@ -20,26 +20,6 @@ import os
 
 app = FastAPI(title="🎬 Louve Movies API")
 
-LOG_FILE = os.getenv("MONITOR_LOG_FILE", "monitoring_logs.csv")
-
-def log_recommendation(user, movie_requested, top_k, recommended_titles, pred_scores, latency):
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "timestamp", "user", "movie_requested", "top_k", "recommended_titles", "pred_scores", "latency_s"
-            ])
-    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            datetime.now().isoformat(),
-            user,
-            movie_requested,
-            top_k,
-            "|".join(recommended_titles),
-            "|".join([str(round(s, 3)) for s in pred_scores]),
-            round(latency, 3)
-        ])
 
 # ------------------------------
 # Configuration BDD
@@ -252,18 +232,6 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             "pred_score": float(score_final)
         })
 
-        try:
-        log_recommendation(
-            user="streamlit_user",  # tu peux remplacer par l’username réel si dispo
-            movie_requested=title,
-            top_k=top_k,
-            recommended_titles=[rec["title"] for rec in top_recos_list],
-            pred_scores=[rec["pred_score"] for rec in top_recos_list],
-            latency=time.time() - start_time
-        )
-    except Exception as e:
-        print(f"Erreur logging: {e}")
-        
     return top_recos_list
 
 # ------------------------------
@@ -487,4 +455,5 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
