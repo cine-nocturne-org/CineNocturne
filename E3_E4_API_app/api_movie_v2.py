@@ -9,6 +9,7 @@ import random
 import unicodedata
 from datetime import datetime
 from typing import List
+import re
 
 import pandas as pd
 import numpy as np
@@ -245,23 +246,35 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
         top_indices = np.argsort(pred_scores_scaled)[::-1][:top_k]
 
+        def sanitize_mlflow_key(title: str) -> str:
+            """
+            Transforme un titre de film en une clé valide pour MLflow.
+            Remplace tout caractère non alphanumérique ou non _- par _
+            """
+            return re.sub(r"[^0-9a-zA-Z_\-\.]", "_", title)
+        
+        # --- Bloc de logging sécurisé pour MLflow ---
         top_recos_list = []
+        
         for idx_top in top_indices:
             movie = movies_dict[candidate_titles[idx_top]]
             user_rating = movie.get("user_rating") or 0.0
             movie_rating = movie.get("rating") or 5.0
             score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
-
+        
+            # clé sécurisée pour MLflow
+            key_safe = sanitize_mlflow_key(movie["title"])
+        
             # ⚡ Log dans MLflow
-            mlflow.log_metric(f"pred_score_{movie['title']}", float(pred_scores_scaled[idx_top]))
-            mlflow.log_metric(f"user_rating_{movie['title']}", float(user_rating))
-            mlflow.log_metric(f"movie_rating_{movie['title']}", float(movie_rating))
-
+            mlflow.log_metric(f"pred_score_{key_safe}", float(pred_scores_scaled[idx_top]))
+            mlflow.log_metric(f"user_rating_{key_safe}", float(user_rating))
+            mlflow.log_metric(f"movie_rating_{key_safe}", float(movie_rating))
+        
             # Log de la différence entre prédiction et note utilisateur
             score_diff = abs(pred_scores_scaled[idx_top] - (user_rating / 10))
-            mlflow.log_metric(f"score_diff_{movie['title']}", score_diff)
-
-            # ✅ Gestion genres : string ou liste
+            mlflow.log_metric(f"score_diff_{key_safe}", score_diff)
+        
+            # Gestion genres : string ou liste
             genres_raw = movie.get("genres", [])
             if isinstance(genres_raw, str):
                 genres_list = [g.strip() for g in genres_raw.replace(",", "|").split("|") if g.strip()]
@@ -269,27 +282,29 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 genres_list = [g.strip() for g in genres_raw if g.strip()]
             else:
                 genres_list = []
-
+        
             top_recos_list.append({
                 "title": movie["title"],
                 "poster_url": movie.get("poster_url"),
                 "releaseYear": movie.get("release_year"),
                 "genres": genres_list,
                 "synopsis": movie.get("synopsis"),
-                "platforms": [],  # ⚡ dispo seulement dans movie-details
+                "platforms": [],  # dispo uniquement via movie-details
                 "pred_score": float(score_final)
             })
-
-        # --- Log dans MLflow ---
+        
+        # --- Log global ---
         mlflow.log_param("input_title", title)
         mlflow.log_param("top_k", top_k)
         mlflow.log_metric("max_score", float(pred_scores_scaled.max()))
         mlflow.log_metric("min_score", float(pred_scores_scaled.min()))
         mlflow.log_text(str([r["title"] for r in top_recos_list]), "top_recommended_titles.txt")
-
-        # ⚡ Ici on log chaque score de recommandation
+        
+        # ⚡ Ici on log chaque score final, toujours sécurisé
         for i, reco in enumerate(top_recos_list):
-            mlflow.log_metric(f"pred_score_{i}", reco["pred_score"])
+            key_safe = sanitize_mlflow_key(reco["title"])
+            mlflow.log_metric(f"pred_score_{i}_{key_safe}", reco["pred_score"])
+
 
     return top_recos_list
 
@@ -516,6 +531,7 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
