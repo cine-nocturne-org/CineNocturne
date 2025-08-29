@@ -64,11 +64,11 @@ def logout():
 # -----------------------------
 def api_get(endpoint: str, params: dict = None):
     headers = {"Authorization": f"Bearer {st.session_state.api_token}"}
-    return requests.get(f"{API_URL}{endpoint}", headers=headers, params=params, timeout=5)
+    return requests.get(f"{API_URL}{endpoint}", headers=headers, params=params)
 
 def api_post(endpoint: str, payload: dict):
     headers = {"Authorization": f"Bearer {st.session_state.api_token}"}
-    return requests.post(f"{API_URL}{endpoint}", headers=headers, json=payload, timeout=5)
+    return requests.post(f"{API_URL}{endpoint}", headers=headers, json=payload)
 
 # -----------------------------
 # Application principale
@@ -347,5 +347,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
