@@ -32,6 +32,7 @@ USERS = {k.replace("USER_", "").lower(): v for k, v in os.environ.items() if k.s
 # -----------------------------
 def login_page():
     """Affiche la page de connexion"""
+    render_header()
     st.title("🔐 Connexion")
     st.markdown("---")
 
@@ -111,42 +112,45 @@ def film_selector(matches: list, state_key_prefix: str):
                 else:
                     if st.button("Sélectionner", key=unique_key):
                         st.session_state[f"{state_key_prefix}_chosen"] = match["title"]
+                        
 
 # -----------------------------
-# Affichage de l'utilisateur connecté
+# Header commun
 # -----------------------------
-if st.session_state.get("username"):
-    col1, col2 = st.columns([8, 2])  # laisse de la place à gauche pour pousser à droite
-    with col2:
-        st.markdown(
-            f"""
-            <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px;">
-                <span>👋 Connecté en tant que: <b>{st.session_state.username}</b></span>
+def render_header():
+    st.markdown(
+        """
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <!-- Logo + titre -->
+            <div style="display: flex; align-items: center;">
+                <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='120'>
+                <h1 style="margin-left: 15px; margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h1>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
-        # Bouton sur la même ligne que le texte
-        st.button("🚪 Se déconnecter", on_click=logout)
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Si l'utilisateur est connecté → afficher pseudo + bouton
+    if st.session_state.get("username"):
+        col1, col2 = st.columns([8, 2])
+        with col2:
+            st.markdown(
+                f"""
+                <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px;">
+                    <span>👋 Connecté en tant que: <b>{st.session_state.username}</b></span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.button("🚪 Se déconnecter", on_click=logout)
+
 
 
 # -----------------------------
 # Header avec logo et titres
 # -----------------------------
 def main_app():
-    st.markdown(
-        """
-        <div style="display: flex; align-items: center; margin-bottom: 20px;">
-            <div style="flex: 0 0 auto;">
-                <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='250'>
-            </div>
-            <div style="flex: 1; margin-left: 5px;">
-                <h1 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h1>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    render_header()
 
     # ------------------------------
     # Onglets
@@ -438,6 +442,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
