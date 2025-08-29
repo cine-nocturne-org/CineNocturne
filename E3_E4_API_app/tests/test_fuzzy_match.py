@@ -2,6 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from api_movie_v2 import app, USERNAME, PASSWORD
+import sys
+
+sys.modules['mlflow'] = MagicMock()
 
 client = TestClient(app)
 
@@ -39,5 +42,6 @@ def test_fuzzy_match_found(mock_movies_dict, mock_movie_index_df):
     assert "matches" in data
     assert data["matches"][0]["title"] == "Zombieland"
     assert data["matches"][0]["movie_id"] == 1
+
 
 
