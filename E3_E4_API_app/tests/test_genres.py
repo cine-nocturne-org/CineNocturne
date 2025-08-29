@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from api_movie_v2 import app, USERNAME, PASSWORD
 import os
-
+from dotenv import load_dotenv
+load_dotenv()
 
 client = TestClient(app)
 
@@ -38,6 +39,7 @@ def test_get_unique_genres(mock_engine):
     # On vérifie que la réponse contient bien les genres séparés
     assert "Action" in data
     assert "Comédie" in data
+
 
 
 
