@@ -395,17 +395,17 @@ def main_app():
                 st.warning("⚠️ Veuillez entrer un titre de film")
     
         # Sélection du film
-        if st.session_state.get("fuzzy_matches_tab3"):
+        if st.session_state.get("fuzzy_matches_tab3") and not st.session_state.get("tab3_chosen"):
             film_selector(st.session_state["fuzzy_matches_tab3"], "tab3")
-    
+        
         # Affichage détails du film choisi
         chosen_film = st.session_state.get("tab3_chosen")
         if chosen_film:
+            st.success(f"🎬 Film sélectionné : {chosen_film}")
             try:
                 response = api_get(f"movie-details/{chosen_film}")
                 if response.status_code == 200:
                     details = response.json()
-                    st.success("✅ Détails du film trouvés !")
                     col1, col2 = st.columns([1, 2])
                     with col1:
                         if details.get("poster_url"):
@@ -420,6 +420,7 @@ def main_app():
                     st.error(response.json().get("detail", "Film non trouvé"))
             except requests.exceptions.RequestException:
                 st.error("❌ Erreur de connexion avec le serveur")
+
 
 
 
@@ -441,6 +442,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
