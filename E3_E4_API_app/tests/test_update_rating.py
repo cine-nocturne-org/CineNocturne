@@ -5,11 +5,12 @@ from api_movie_v2 import app, USERNAME, PASSWORD
 
 client = TestClient(app)
 
-def get_auth_headers(username=USERNAME, password=PASSWORD):
+def get_auth_headers():
+    # Basic Auth
     import base64
-    creds = f"{username}:{password}"
-    b64_creds = base64.b64encode(creds.encode()).decode()
-    return {"Authorization": f"Basic {b64_creds}"}
+    credentials = f"{os.getenv('API_USERNAME')}:{os.getenv('API_PASSWORD')}"
+    b64_credentials = base64.b64encode(credentials.encode()).decode()
+    return {"Authorization": f"Basic {b64_credentials}"}
 
 @patch("api_movie_v2.engine")
 def test_update_rating_valid(mock_engine):
@@ -36,3 +37,4 @@ def test_update_rating_invalid_rating():
     payload = {"title": "Zombieland", "rating": 15.0}
     response = client.post("/update_rating", json=payload, headers=get_auth_headers())
     assert response.status_code == 400
+
