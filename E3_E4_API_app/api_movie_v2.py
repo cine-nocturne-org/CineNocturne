@@ -259,8 +259,10 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             top_recos_list.append({
                 "title": movie["title"],
                 "poster_url": movie.get("poster_url"),
-                "genres": movie.get("genres"),
+                "releaseYear": movie.get("release_year"),
+                "genres": [g.strip() for g in movie.get("genres", "").replace(",", "|").split("|") if g.strip()],
                 "synopsis": movie.get("synopsis"),
+                "platforms": [],  # ⚡ dispo seulement dans movie-details
                 "pred_score": float(score_final)
             })
         
@@ -498,4 +500,5 @@ async def download_movie_details():
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
+
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
