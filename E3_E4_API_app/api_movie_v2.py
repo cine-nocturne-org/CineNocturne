@@ -1,27 +1,32 @@
+# -----------------------------
+# Imports nécessaires
+# -----------------------------
+import os
+import io
+import csv
+import logging
+import random
+import unicodedata
+from datetime import datetime
+from typing import List
+
+import pandas as pd
+import numpy as np
+import joblib
+import mlflow
 from fastapi import FastAPI, HTTPException, Depends, Query
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel
-from typing import List
-import pandas as pd
-import numpy as np
-import joblib
-from sklearn.metrics.pairwise import cosine_similarity
 from rapidfuzz import process, fuzz
-import unicodedata
-import random
-import io
-from datetime import datetime
-import os
-import csv
-import mlflow
-from E3_E4_API_app import config
-import logging
 from dotenv import load_dotenv
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "E3_E4_API_app"))
+import config
+
 
 # Configuration du logger (mettre ça en début de fichier)
 logging.basicConfig(
@@ -195,7 +200,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     # --- Début MLflow run ---
     with mlflow.start_run(run_name=f"recommend_{title}") as run:
         logger.info(f"MLflow run ID: {run.info.run_id}")
-    
+
         chosen_genres = set(genres_list_all[idx])
 
         vec = tfidf_matrix[idx].reshape(1, -1)
@@ -251,21 +256,29 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             mlflow.log_metric(f"pred_score_{movie['title']}", float(pred_scores_scaled[idx_top]))
             mlflow.log_metric(f"user_rating_{movie['title']}", float(user_rating))
             mlflow.log_metric(f"movie_rating_{movie['title']}", float(movie_rating))
-            
+
             # Log de la différence entre prédiction et note utilisateur
             score_diff = abs(pred_scores_scaled[idx_top] - (user_rating / 10))
             mlflow.log_metric(f"score_diff_{movie['title']}", score_diff)
+
+            # ✅ Gestion genres : string ou liste
+            genres_raw = movie.get("genres", [])
+            if isinstance(genres_raw, str):
+                genres_list = [g.strip() for g in genres_raw.replace(",", "|").split("|") if g.strip()]
+            elif isinstance(genres_raw, list):
+                genres_list = [g.strip() for g in genres_raw if g.strip()]
+            else:
+                genres_list = []
 
             top_recos_list.append({
                 "title": movie["title"],
                 "poster_url": movie.get("poster_url"),
                 "releaseYear": movie.get("release_year"),
-                "genres": [g.strip() for g in movie.get("genres", "").replace(",", "|").split("|") if g.strip()],
+                "genres": genres_list,
                 "synopsis": movie.get("synopsis"),
                 "platforms": [],  # ⚡ dispo seulement dans movie-details
                 "pred_score": float(score_final)
             })
-        
 
         # --- Log dans MLflow ---
         mlflow.log_param("input_title", title)
@@ -279,6 +292,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             mlflow.log_metric(f"pred_score_{i}", reco["pred_score"])
 
     return top_recos_list
+
     
 # ------------------------------
 # Route: Fuzzy match
@@ -502,3 +516,4 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
