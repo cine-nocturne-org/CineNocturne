@@ -116,19 +116,19 @@ def film_selector(matches: list, state_key_prefix: str):
 # Affichage de l'utilisateur connecté
 # -----------------------------
 if st.session_state.get("username"):
-    col_left, col_right = st.columns([8, 2])  # large espace à gauche, contenu à droite
-    with col_right:
+    col1, col2 = st.columns([8, 2])  # laisse de la place à gauche pour pousser à droite
+    with col2:
         st.markdown(
             f"""
-            <div style="display: flex; justify-content: flex-end; align-items: center;">
-                <span style="margin-right: 15px;">👋 Connecté en tant que: <b>{st.session_state.username}</b></span>
+            <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px;">
+                <span>👋 Connecté en tant que: <b>{st.session_state.username}</b></span>
             </div>
             """,
             unsafe_allow_html=True
         )
-        # Bouton Streamlit (pas HTML) -> appelle ta fonction logout()
-        if st.button("🚪 Se déconnecter"):
-            logout()
+        # Bouton sur la même ligne que le texte
+        st.button("🚪 Se déconnecter", on_click=logout)
+
 
 # -----------------------------
 # Header avec logo et titres
@@ -438,6 +438,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
