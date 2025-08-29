@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from api_movie_v2 import app, USERNAME, PASSWORD
+import os
 
 client = TestClient(app)
 
@@ -40,6 +41,7 @@ def test_get_movie_details_not_found(mock_connect):
 
     response = client.get("/movie-details/TitreInexistant123", headers=get_auth_headers())
     assert response.status_code == 404
+
 
 
 
