@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from rapidfuzz import process, fuzz
 from dotenv import load_dotenv
 import sys
+from sklearn.metrics.pairwise import cosine_similarity
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "E3_E4_API_app"))
 import config
@@ -516,4 +517,5 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
