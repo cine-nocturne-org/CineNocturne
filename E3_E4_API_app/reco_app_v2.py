@@ -126,8 +126,7 @@ def main_app():
                 <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='250'>
             </div>
             <div style="flex: 1; margin-left: 20px;">
-                <h1 style="margin: 0;">CinéNocturne</h1>
-                <h3 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h3>
+                <h1 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h3>
             </div>
         </div>
         """,
@@ -434,6 +433,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
