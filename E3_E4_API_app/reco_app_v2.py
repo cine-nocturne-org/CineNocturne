@@ -113,35 +113,30 @@ def film_selector(matches: list, state_key_prefix: str):
                         st.session_state[f"{state_key_prefix}_chosen"] = match["title"]
 
 # -----------------------------
-# Application principale
-# ----------------------------
-def main_app():
-    # -----------------------------
-    # Header centré avec logo et titres
-    # -----------------------------
-    st.markdown(
-        """
-        <div style="display: flex; align-items: center; margin-bottom: 20px;">
-            <div style="flex: 0 0 auto;">
-                <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='250'>
-            </div>
-            <div style="flex: 1; margin-left: 5px;">
-                <h1 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h3>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+# Affichage de l'utilisateur connecté
+# -----------------------------
+if st.session_state.get("username"):
+    st.write(f"👋 Connecté en tant que: **{st.session_state.username}**")
+    if st.button("🚪 Se déconnecter"):
+        logout()
 
-    # -----------------------------
-    # Bouton déconnexion (optionnel)
-    # -----------------------------
-    if st.session_state.get("username"):
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            st.write(f"👋 Connecté en tant que: **{st.session_state.username}**")
-            if st.button("🚪 Se déconnecter"):
-                logout()
+# -----------------------------
+# Header avec logo et titres
+# -----------------------------
+st.markdown(
+    """
+    <div style="display: flex; align-items: center; margin-bottom: 20px;">
+        <div style="flex: 0 0 auto;">
+            <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='120'>
+        </div>
+        <div style="flex: 1; margin-left: 20px;">
+            <h1 style="margin: 0;">CinéNocturne</h1>
+            <h3 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h3>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
     # ------------------------------
     # Onglets
@@ -433,6 +428,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
