@@ -195,7 +195,7 @@ def main_app():
                 st.session_state["already_recommended"] = set()
     
             st.subheader("🔍 Obtenir une recommandation personnalisée")
-            if st.button("🎯 Me proposer d'autres recommandations", key="btn_more_reco"):
+            if st.button("🎯 Me recommander des films", key="btn_more_reco"):
                 try:
                     mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
                     with mlflow.start_run(run_name=f"streamlit_reco_{chosen_film}", nested=True):
@@ -384,6 +384,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
