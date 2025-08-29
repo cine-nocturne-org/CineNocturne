@@ -123,7 +123,8 @@ def main_app():
         if st.session_state.get("fuzzy_matches"):
             matches_info = []
             for match in st.session_state["fuzzy_matches"]:
-                details_resp = api_get(f"movie-details/{match['title']}")
+                details_resp = api_get(f"movie-details/{movie_id}")
+                #details_resp = api_get(f"movie-details/{match['title']}")
                 poster_url = None
                 movie_id = match.get("movie_id")
                 if details_resp.status_code == 200:
@@ -347,6 +348,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
