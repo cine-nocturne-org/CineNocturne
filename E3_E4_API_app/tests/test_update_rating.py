@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 from api_movie_v2 import app, USERNAME, PASSWORD
+import os
 
 client = TestClient(app)
 
@@ -37,4 +38,5 @@ def test_update_rating_invalid_rating():
     payload = {"title": "Zombieland", "rating": 15.0}
     response = client.post("/update_rating", json=payload, headers=get_auth_headers())
     assert response.status_code == 400
+
 
