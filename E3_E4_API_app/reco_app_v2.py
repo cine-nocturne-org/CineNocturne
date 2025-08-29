@@ -123,7 +123,7 @@ def main_app():
         """
         <div style="display: flex; align-items: center; margin-bottom: 20px;">
             <div style="flex: 0 0 auto;">
-                <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='120'>
+                <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='250'>
             </div>
             <div style="flex: 1; margin-left: 20px;">
                 <h1 style="margin: 0;">CinéNocturne</h1>
@@ -434,6 +434,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
