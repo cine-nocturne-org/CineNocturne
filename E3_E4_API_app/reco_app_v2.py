@@ -354,7 +354,7 @@ def main_app():
                             title = movie.get("title", "Titre inconnu")
                             raw_genres = movie.get("genres", [])
                             genres = raw_genres if isinstance(raw_genres, list) else [g.strip() for g in raw_genres.split(",")]
-                            st.markdown(f"### 🎬 {title} ({year})")
+                            st.markdown(f"### 🎬 {title}")
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                             st.write(synopsis)
 
@@ -442,6 +442,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
