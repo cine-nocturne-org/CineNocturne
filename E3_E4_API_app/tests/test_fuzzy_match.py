@@ -8,11 +8,12 @@ sys.modules['mlflow'] = MagicMock()
 
 client = TestClient(app)
 
-def get_auth_headers(username=USERNAME, password=PASSWORD):
+def get_auth_headers():
+    # Basic Auth
     import base64
-    creds = f"{username}:{password}"
-    b64_creds = base64.b64encode(creds.encode()).decode()
-    return {"Authorization": f"Basic {b64_creds}"}
+    credentials = f"{os.getenv('API_USERNAME')}:{os.getenv('API_PASSWORD')}"
+    b64_credentials = base64.b64encode(credentials.encode()).decode()
+    return {"Authorization": f"Basic {b64_credentials}"}
 
 # ------------------------------
 # Test /fuzzy_match trouvé
@@ -42,6 +43,7 @@ def test_fuzzy_match_found(mock_movies_dict, mock_movie_index_df):
     assert "matches" in data
     assert data["matches"][0]["title"] == "Zombieland"
     assert data["matches"][0]["movie_id"] == 1
+
 
 
 
