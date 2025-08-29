@@ -130,19 +130,19 @@ def render_header():
         unsafe_allow_html=True
     )
 
-    # Si l'utilisateur est connecté → afficher pseudo + bouton
-    if st.session_state.get("username"):
-        col1, col2 = st.columns([8, 2])
-        with col2:
-            st.markdown(
-                f"""
-                <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px;">
-                    <span>👋 Connecté en tant que: <b>{st.session_state.username}</b></span>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            st.button("🚪 Se déconnecter", on_click=logout)
+# Si l'utilisateur est connecté → afficher pseudo + bouton
+if st.session_state.get("username"):
+    col1, col2 = st.columns([8, 2])
+    with col2:
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px;">
+                <span>👋 Connecté en tant que: <b>{st.session_state.username}</b></span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        st.button("🚪 Se déconnecter", on_click=logout)
 
 
 
@@ -442,6 +442,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
