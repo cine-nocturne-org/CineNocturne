@@ -121,10 +121,14 @@ def main_app():
     # -----------------------------
     st.markdown(
         """
-        <div style="text-align: center; margin-bottom: 20px;">
-            <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='120' style="margin-bottom: 10px;">
-            <h1 style="margin: 0;">CinéNocturne</h1>
-            <h3 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h3>
+        <div style="display: flex; align-items: center; margin-bottom: 20px;">
+            <div style="flex: 0 0 auto;">
+                <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='120'>
+            </div>
+            <div style="flex: 1; margin-left: 20px;">
+                <h1 style="margin: 0;">CinéNocturne</h1>
+                <h3 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h3>
+            </div>
         </div>
         """,
         unsafe_allow_html=True
@@ -430,6 +434,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
