@@ -13,13 +13,15 @@ from rapidfuzz import process, fuzz
 import unicodedata
 import random
 import io
-import os
-import csv
 from datetime import datetime
 import os
+import csv
 import mlflow
 from E3_E4_API_app import config
 import logging
+from dotenv import load_dotenv
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 
 # Configuration du logger (mettre ça en début de fichier)
 logging.basicConfig(
@@ -108,19 +110,30 @@ PLATFORM_TABLES = {
 }
 
 # ------------------------------
-# Authentification HTTP Basic
+# Authentification HTTP Basic / Bearer
 # ------------------------------
-USERNAME = "user"
-PASSWORD = "password"
-security = HTTPBasic()
+load_dotenv()
 
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.username != USERNAME or credentials.password != PASSWORD:
-        raise HTTPException(
-            status_code=401,
-            detail="Nom d'utilisateur ou mot de passe invalide",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+USERNAME: str = os.getenv("API_USERNAME")
+PASSWORD: str = os.getenv("API_PASSWORD")
+API_TOKEN: str = os.getenv("API_TOKEN")
+
+security_basic = HTTPBasic(auto_error=False)
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+def verify_credentials(
+    credentials: HTTPBasicCredentials = Depends(security_basic),
+    api_key: str = Depends(api_key_header)
+):
+    # Mode 1 : Basic Auth
+    if credentials and credentials.username == USERNAME and credentials.password == PASSWORD:
+        return True
+
+    # Mode 2 : Bearer Token
+    if api_key and api_key == f"Bearer {API_TOKEN}":
+        return True
+
+    raise HTTPException(status_code=401, detail="Non autorisé")
 
 # ------------------------------
 # Pydantic model
@@ -233,6 +246,16 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             user_rating = movie.get("user_rating") or 0.0
             movie_rating = movie.get("rating") or 5.0
             score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
+
+            # ⚡ Log dans MLflow
+            mlflow.log_metric(f"pred_score_{movie['title']}", float(pred_scores_scaled[idx_top]))
+            mlflow.log_metric(f"user_rating_{movie['title']}", float(user_rating))
+            mlflow.log_metric(f"movie_rating_{movie['title']}", float(movie_rating))
+            
+            # Log de la différence entre prédiction et note utilisateur
+            score_diff = abs(pred_scores_scaled[idx_top] - (user_rating / 10))
+            mlflow.log_metric(f"score_diff_{movie['title']}", score_diff)
+
             top_recos_list.append({
                 "title": movie["title"],
                 "poster_url": movie.get("poster_url"),
@@ -240,6 +263,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "synopsis": movie.get("synopsis"),
                 "pred_score": float(score_final)
             })
+        
 
         # --- Log dans MLflow ---
         mlflow.log_param("input_title", title)
@@ -247,6 +271,10 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         mlflow.log_metric("max_score", float(pred_scores_scaled.max()))
         mlflow.log_metric("min_score", float(pred_scores_scaled.min()))
         mlflow.log_text(str([r["title"] for r in top_recos_list]), "top_recommended_titles.txt")
+
+        # ⚡ Ici on log chaque score de recommandation
+        for i, reco in enumerate(top_recos_list):
+            mlflow.log_metric(f"pred_score_{i}", reco["pred_score"])
 
     return top_recos_list
     
@@ -471,8 +499,3 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
-
-
-
-
