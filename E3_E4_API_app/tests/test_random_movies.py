@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from api_movie_v2 import app, USERNAME, PASSWORD
+import os
+
 
 client = TestClient(app)
 
@@ -48,5 +50,6 @@ def test_get_random_movies_no_result(mock_connect):
         headers=get_auth_headers()
     )
     assert response.status_code == 404
+
 
 
