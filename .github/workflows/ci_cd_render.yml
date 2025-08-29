@@ -31,6 +31,11 @@ jobs:
     - name: Run tests
       run: |
         export PYTHONPATH=$PYTHONPATH:$(pwd)/E3_E4_API_app
+        export API_USERNAME=${{ secrets.API_USERNAME }}
+        export API_PASSWORD=${{ secrets.API_PASSWORD }}
+        export API_TOKEN=${{ secrets.API_TOKEN }}
+        export USER_LOU=${{ secrets.USER_LOU }}
+        export USER_MAX=${{ secrets.USER_MAX }}
         pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
     # 5️⃣ Déployer sur Render uniquement si les tests passent
@@ -39,7 +44,8 @@ jobs:
       env:
         RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       run: |
-        curl -X POST "https://api.render.com/deploy/srv-XXXX" \
+        curl -X POST "https://api.render.com/deploy/srv-d2nhlbe3jp1c73cmfa00" \
           -H "Authorization: Bearer $RENDER_API_KEY"
+
 
 
