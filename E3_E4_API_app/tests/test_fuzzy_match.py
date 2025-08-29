@@ -4,6 +4,9 @@ from unittest.mock import patch, MagicMock
 from api_movie_v2 import app, USERNAME, PASSWORD
 import sys
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 
 sys.modules['mlflow'] = MagicMock()
 
@@ -54,6 +57,7 @@ def test_fuzzy_match_found(mock_movies_dict, mock_movie_index_df):
     assert "matches" in data
     assert data["matches"][0]["title"] == "Zombieland"
     assert data["matches"][0]["movie_id"] == 1
+
 
 
 
