@@ -116,12 +116,19 @@ def film_selector(matches: list, state_key_prefix: str):
 # Affichage de l'utilisateur connecté
 # -----------------------------
 if st.session_state.get("username"):
-    col_left, col_right = st.columns([8, 1])  # Colonne large à gauche, petite à droite
+    col_left, col_right = st.columns([8, 2])  # large espace à gauche, contenu à droite
     with col_right:
+        st.markdown(
+            f"""
+            <div style="display: flex; justify-content: flex-end; align-items: center;">
+                <span style="margin-right: 15px;">👋 Connecté en tant que: <b>{st.session_state.username}</b></span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        # Bouton Streamlit (pas HTML) -> appelle ta fonction logout()
         if st.button("🚪 Se déconnecter"):
             logout()
-    with col_left:
-        st.write(f"👋 Connecté en tant que: **{st.session_state.username}**")
 
 # -----------------------------
 # Header avec logo et titres
