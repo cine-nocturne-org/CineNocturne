@@ -116,16 +116,16 @@ def film_selector(matches: list, state_key_prefix: str):
 # Affichage de l'utilisateur connecté
 # -----------------------------
 if st.session_state.get("username"):
-    st.write(f"👋 Connecté en tant que: **{st.session_state.username}**")
-    if st.button("🚪 Se déconnecter"):
-        logout()
+    col_left, col_right = st.columns([8, 1])  # Colonne large à gauche, petite à droite
+    with col_right:
+        if st.button("🚪 Se déconnecter"):
+            logout()
+    with col_left:
+        st.write(f"👋 Connecté en tant que: **{st.session_state.username}**")
 
 # -----------------------------
 # Header avec logo et titres
 # -----------------------------
-# -----------------------------
-# Application principale
-# ----------------------------
 def main_app():
     st.markdown(
         """
@@ -431,6 +431,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
