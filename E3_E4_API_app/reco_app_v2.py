@@ -288,20 +288,6 @@ def main_app():
                     fetch_recommendations()
 
 
-                            else:
-                                st.info("Aucune nouvelle recommandation disponible pour ce film")
-                        else:
-                            st.error(response.json().get("detail", "Erreur inconnue"))
-    
-                except requests.exceptions.RequestException:
-                    st.error("❌ Erreur de connexion avec le serveur")
-                except Exception as e:
-                    st.error(f"❌ Erreur MLflow : {e}")
-                    st.text(traceback.format_exc())
-
-
-
-
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
@@ -444,6 +430,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
