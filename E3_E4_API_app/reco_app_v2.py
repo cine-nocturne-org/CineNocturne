@@ -123,14 +123,14 @@ def main_app():
         if st.session_state.get("fuzzy_matches"):
             matches_info = []
             for match in st.session_state["fuzzy_matches"]:
-                details_resp = api_get(f"movie-details/{movie_id}")
-                #details_resp = api_get(f"movie-details/{match['title']}")
-                poster_url = None
                 movie_id = match.get("movie_id")
+                details_resp = api_get(f"movie-details/{match['title']}")
+                poster_url = None
                 if details_resp.status_code == 200:
                     details = details_resp.json()
                     poster_url = details.get("poster_url")
                     movie_id = details.get("movie_id", movie_id)
+                    
                 matches_info.append({
                     "title": match["title"],
                     "poster": poster_url,
@@ -206,7 +206,8 @@ def main_app():
 
                                         st.markdown(f"### 🎬 {reco_title} ({reco_year})")
                                         st.markdown(f"**Ce film est susceptible de vous plaire à {score_pct}%**")
-                                        st.write(f"**Genres :** {', '.join(reco_genres) if reco_genres else 'N/A'}")
+                                        st.write(f"**Genres :** {', '.join([g.strip() for g in reco_genres]) if reco_genres else 'N/A'}")
+                                        #st.write(f"**Genres :** {', '.join(reco_genres) if reco_genres else 'N/A'}")
                                         st.write(f"**Plateformes disponibles :** {', '.join(reco_platforms) if reco_platforms else 'Indisponible'}")
                                         st.write(reco_synopsis)
                             else:
@@ -348,6 +349,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
