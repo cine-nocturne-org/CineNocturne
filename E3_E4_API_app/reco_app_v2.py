@@ -122,7 +122,7 @@ def main_app():
     st.markdown(
         """
         <div style="text-align: center; margin-bottom: 20px;">
-            <img src='E3_E4_API_app/logo_cinenocturne.png' width='120' style="margin-bottom: 10px;">
+            <img src='https://github.com/PixelLouve/CineNocturne/blob/main/E3_E4_API_app/logo_cinenocturne.png?raw=true' width='120' style="margin-bottom: 10px;">
             <h1 style="margin: 0;">CinéNocturne</h1>
             <h3 style="margin-top: 5px;">🍿 Recommandation de Films Personnalisée</h3>
         </div>
@@ -430,6 +430,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
