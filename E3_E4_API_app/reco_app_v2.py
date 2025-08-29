@@ -375,6 +375,8 @@ def main_app():
         if st.button("🔄 Nouvelle recherche", key="btn_reset_tab3"):
             st.session_state["fuzzy_matches_tab3"] = None
             st.session_state["tab3_chosen"] = None
+            st.session_state["details_title"] = ""
+
     
         film_details_title = st.text_input("Titre du film :", key="details_title")
     
@@ -442,6 +444,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
