@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import mlflow
+from sklearn.metrics.pairwise import cosine_similarity
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.responses import StreamingResponse
@@ -23,10 +24,8 @@ from pydantic import BaseModel
 from rapidfuzz import process, fuzz
 from dotenv import load_dotenv
 import sys
-from sklearn.metrics.pairwise import cosine_similarity
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "E3_E4_API_app"))
-import config
+from E3_E4_API_app import config
 
 
 # Configuration du logger (mettre ça en début de fichier)
@@ -517,5 +516,6 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
