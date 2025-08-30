@@ -186,13 +186,16 @@ def main_app():
         
         @st.cache_data(show_spinner=False)
         def get_fuzzy_matches(film_title: str):
+            if not film_title.strip():
+                return []
             try:
                 response = api_get(f"fuzzy_match/{film_title}", params={"top_k": 10})
                 if response.status_code == 200:
                     return response.json().get("matches", [])
+                return []
             except requests.exceptions.RequestException:
                 return []
-            return []
+
     
         if st.button("Chercher", key="btn_tab1") and film_input:
             matches = get_fuzzy_matches(film_input)
@@ -442,5 +445,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
