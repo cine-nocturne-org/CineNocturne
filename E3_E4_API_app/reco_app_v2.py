@@ -32,15 +32,31 @@ USERS = {k.replace("USER_", "").lower(): v for k, v in os.environ.items() if k.s
 # -----------------------------
 @st.cache_data(show_spinner=False)
 def cached_api_get(endpoint: str, api_token: str, params: dict = None):
+    """GET API avec token obligatoire"""
+    if not api_token:
+        raise ValueError("❌ API token non défini")
     headers = {"Authorization": f"Bearer {api_token}"}
     return requests.get(f"{API_URL}{endpoint}", headers=headers, params=params)
 
-
 @st.cache_data(show_spinner=False)
-def cached_api_post(endpoint: str, payload: dict):
-    headers = {"Authorization": f"Bearer {st.session_state.api_token}"}
+def cached_api_post(endpoint: str, payload: dict, api_token: str):
+    """POST API avec token obligatoire"""
+    if not api_token:
+        raise ValueError("❌ API token non défini")
+    headers = {"Authorization": f"Bearer {api_token}"}
     return requests.post(f"{API_URL}{endpoint}", headers=headers, json=payload)
 
+# -----------------------------
+# Recommandations cache
+# -----------------------------
+@st.cache_data(show_spinner=False)
+def cached_recommendations(chosen_film: str, username: str, api_token: str):
+    """Récupère recommandations personnalisées"""
+    response = cached_api_get(f"recommend_xgb_personalized/{chosen_film}", api_token, params={"top_k": 20})
+    if response.status_code == 200:
+        return response.json()
+    return []
+    
 # -----------------------------
 # Connexion / Déconnexion
 # -----------------------------
@@ -77,7 +93,8 @@ def logout():
 # -----------------------------
 # Film selector optimisé (posters en parallèle)
 # -----------------------------
-def fetch_movie_details(match, api_token):
+def fetch_movie_details(match: Dict, api_token: str) -> Dict:
+    """Récupère les détails d’un film pour le selector"""
     details_resp = cached_api_get(f"movie-details/{match['title']}", api_token)
     poster_url = None
     movie_id = match.get("movie_id")
@@ -91,10 +108,11 @@ def fetch_movie_details(match, api_token):
         "movie_id": movie_id
     }
 
-def film_selector(matches: List[Dict], state_key_prefix: str):
+def film_selector(matches: List[Dict], state_key_prefix: str, api_token: str):
+    """Affiche les posters et boutons de sélection"""
     matches_info = []
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(fetch_movie_details, m, st.session_state.api_token) for m in matches]
+        futures = [executor.submit(fetch_movie_details, m, api_token) for m in matches]
         for future in as_completed(futures):
             matches_info.append(future.result())
 
@@ -403,4 +421,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
