@@ -9,7 +9,6 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 import mlflow
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "E3_E4_API_app"))
 import config
@@ -166,8 +165,6 @@ def main_app():
     # ------------------------------
     # Onglet 1 : Film vu + reco perso
     # ------------------------------
-    executor = ThreadPoolExecutor(max_workers=4)
-
     with tab1:
         st.subheader("✨ Noter un film que vous avez vu")
     
@@ -179,64 +176,27 @@ def main_app():
             st.session_state["tab1_chosen"] = None
             st.session_state["already_recommended"] = set()
             st.session_state["last_recos"] = []
-            st.session_state["last_film_searched"] = ""
-            st.session_state["last_film_reco"] = ""
     
         # -----------------------------
         # Entrée titre film
         # -----------------------------
         film_input = st.text_input("Entrez le titre du film :")
-
-        # -----------------------------
-        # Fonction de recherche fuzzy
-        # -----------------------------
-        def get_fuzzy_matches(title: str):
-            if not title.strip():
-                return []
-            try:
-                st.write(f"DEBUG envoi à l'API: '{title}'")
-                response = api_get(f"fuzzy_match/{title}", params={"top_k": 10})
-                st.write(f"DEBUG status_code: {response.status_code}")
-                if response.status_code == 200:
-                    data = response.json()
-                    st.write(f"DEBUG JSON reçu: {data}")
-                    return data.get("matches", [])
-            except Exception as e:
-                st.write(f"DEBUG Exception API fuzzy_match: {e}")
-            return []
-    
-        @st.cache_data(show_spinner=False)
-        def get_recommendations(chosen_film: str, already_recommended: set):
-            try:
-                response = api_get(f"recommend_xgb_personalized/{chosen_film}", params={"top_k": 20})
-                if response.status_code == 200:
-                    recos = response.json()
-                    new_recos = [r for r in recos if r["title"] not in already_recommended][:10]
-                    return new_recos
-            except:
-                return []
-            return []
-    
-        # -----------------------------
-        # Bouton Chercher
-        # -----------------------------
-        future_fuzzy = None
-        if st.button("Chercher", key="btn_tab1") and film_input.strip():
-            # on soumet le thread avec la valeur actuelle de film_input
-            future_fuzzy = executor.submit(get_fuzzy_matches, film_input.strip())
-    
-        # Récupérer matches dès qu'ils sont prêts
-        if future_fuzzy:
-            with st.spinner("Recherche en cours..."):
-                matches = future_fuzzy.result()
-            st.session_state["fuzzy_matches_tab1"] = matches
-            st.session_state["last_film_searched"] = film_input
+        if st.button("Chercher", key="btn_tab1"):
+            st.session_state["fuzzy_matches_tab1"] = None
             st.session_state["tab1_chosen"] = None
             st.session_state["already_recommended"] = set()
-            st.session_state["last_recos"] = []
-    
-            if not matches:
-                st.warning("⚠️ Aucun film trouvé avec ce titre.")
+            if film_input:
+                try:
+                    response = api_get(f"fuzzy_match/{film_input}", params={"top_k": 10})
+                    if response.status_code == 200:
+                        matches = response.json().get("matches", [])
+                        st.session_state["fuzzy_matches_tab1"] = matches if matches else []
+                        if not matches:
+                            st.warning("⚠️ Aucun film trouvé avec ce titre.")
+                    else:
+                        st.error("❌ Erreur lors de la recherche.")
+                except requests.exceptions.RequestException:
+                    st.error("❌ Erreur de connexion avec le serveur")
     
         # -----------------------------
         # Sélection du film
@@ -277,30 +237,48 @@ def main_app():
                         st.warning("⚠️ Veuillez saisir un nombre valide")
     
             # -----------------------------
-            # Recommandations en parallèle
+            # Gestion des recommandations
             # -----------------------------
             if "already_recommended" not in st.session_state:
                 st.session_state["already_recommended"] = set()
             if "last_recos" not in st.session_state:
                 st.session_state["last_recos"] = []
     
-            future_recos = None
-            if st.button("🎯 Me proposer des recommandations"):
-                future_recos = executor.submit(get_recommendations, chosen_film, st.session_state["already_recommended"])
+            def fetch_recommendations():
+                try:
+                    mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
+                    with mlflow.start_run(run_name=f"streamlit_reco_{chosen_film}", nested=True):
+                        mlflow.log_param("user", st.session_state.username)
+                        mlflow.log_param("film_input", chosen_film)
     
-            if future_recos:
-                with st.spinner("Chargement des recommandations..."):
-                    new_recos = future_recos.result()
-                if new_recos:
-                    for r in new_recos:
-                        st.session_state["already_recommended"].add(r["title"])
-                    st.session_state["last_recos"] = new_recos
-                else:
-                    st.info("Aucune nouvelle recommandation disponible pour ce film")
+                        response = api_get(f"recommend_xgb_personalized/{chosen_film}", params={"top_k": 20})
+                        if response.status_code == 200:
+                            recos = response.json()
+                            # Filtrer les films déjà proposés
+                            new_recos = [r for r in recos if r["title"] not in st.session_state["already_recommended"]][:10]
+    
+                            if new_recos:
+                                for r in new_recos:
+                                    st.session_state["already_recommended"].add(r["title"])
+                                st.session_state["last_recos"] = new_recos
+                            else:
+                                st.info("Aucune nouvelle recommandation disponible pour ce film")
+                                st.session_state["last_recos"] = []
+                        else:
+                            st.error(response.json().get("detail", "Erreur inconnue"))
+                            st.session_state["last_recos"] = []
+                except Exception as e:
+                    st.error(f"❌ Erreur : {e}")
                     st.session_state["last_recos"] = []
     
             # -----------------------------
-            # Affichage recommandations
+            # Bouton pour obtenir les recommandations
+            # -----------------------------
+            if st.button("🎯 Me proposer des recommandations"):
+                fetch_recommendations()
+    
+            # -----------------------------
+            # Affichage des recommandations
             # -----------------------------
             if st.session_state["last_recos"]:
                 st.subheader("🎯 Recommandations précédentes")
@@ -308,15 +286,18 @@ def main_app():
                     cols = st.columns([1,3])
                     with cols[0]:
                         if reco.get("poster_url"):
-                            st.image(reco["poster_url"], width=150)
+                            st.image(reco["poster_url"], width="stretch")
                     with cols[1]:
                         st.markdown(f"### 🎬 {reco['title']} ({reco.get('releaseYear','N/A')})")
                         st.write(f"**Genres :** {', '.join(reco.get('genres',[]))}")
                         st.write(f"**Plateformes :** {', '.join(reco.get('platforms',[]))}")
                         st.write(reco.get("synopsis","Pas de synopsis disponible"))
     
+                # -----------------------------
+                # Bouton pour obtenir d'autres recommandations
+                # -----------------------------
                 if st.button("🔄 Me proposer d'autres recommandations"):
-                    future_recos = executor.submit(get_recommendations, chosen_film, st.session_state["already_recommended"])
+                    fetch_recommendations()
 
 
     # ------------------------------
@@ -461,8 +442,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
