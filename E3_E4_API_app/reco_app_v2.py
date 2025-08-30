@@ -186,17 +186,23 @@ def main_app():
         # Entrée titre film
         # -----------------------------
         film_input = st.text_input("Entrez le titre du film :")
-    
-        @st.cache_data(show_spinner=False)
-        def get_fuzzy_matches(film_title: str):
-            if not film_title.strip():
+
+        # -----------------------------
+        # Fonction de recherche fuzzy
+        # -----------------------------
+        def get_fuzzy_matches(title: str):
+            if not title.strip():
                 return []
             try:
-                response = api_get(f"fuzzy_match/{film_title}", params={"top_k": 10})
+                st.write(f"DEBUG envoi à l'API: '{title}'")
+                response = api_get(f"fuzzy_match/{title}", params={"top_k": 10})
+                st.write(f"DEBUG status_code: {response.status_code}")
                 if response.status_code == 200:
-                    return response.json().get("matches", [])
-            except:
-                return []
+                    data = response.json()
+                    st.write(f"DEBUG JSON reçu: {data}")
+                    return data.get("matches", [])
+            except Exception as e:
+                st.write(f"DEBUG Exception API fuzzy_match: {e}")
             return []
     
         @st.cache_data(show_spinner=False)
@@ -215,8 +221,9 @@ def main_app():
         # Bouton Chercher
         # -----------------------------
         future_fuzzy = None
-        if st.button("Chercher", key="btn_tab1") and film_input:
-            future_fuzzy = executor.submit(get_fuzzy_matches, film_input)
+        if st.button("Chercher", key="btn_tab1") and film_input.strip():
+            # on soumet le thread avec la valeur actuelle de film_input
+            future_fuzzy = executor.submit(get_fuzzy_matches, film_input.strip())
     
         # Récupérer matches dès qu'ils sont prêts
         if future_fuzzy:
@@ -454,6 +461,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
