@@ -161,3 +161,52 @@ CineNocturne/
 ---
 
 ## 🕹️ Utilisation
+
+1. **Connexion**
+   Entre ton nom d’utilisateur et ton mot de passe.
+2. **Onglet 1 : Recommandations perso**
+
+   * Cherche un film que tu as vu
+   * Donne-lui une note
+   * Reçois des recommandations personnalisées
+3. **Onglet 2 : Suggestions aléatoires**
+
+   * Choisis un genre et une ou plusieurs plateformes
+   * Découvre des films aléatoires
+4. **Onglet 3 : Plateformes disponibles**
+
+   * Recherche un film pour connaître toutes les plateformes où il est disponible
+
+---
+
+## 🧪 Notes techniques
+
+* **Caching** : `@st.cache_data` pour réduire les appels API répétitifs.
+* **Affichage centralisé** : `display_movie()` pour uniformiser la présentation des films.
+* **MLflow** : intégration pour tracker notes et recommandations.
+* **Optimisations** : composants réutilisables et structure compatible exécution multithread.
+
+---
+
+## 🩹 Dépannage rapide
+
+* **Erreur de définition d’API (ex. 502 sur `/openapi.json`)** :
+
+  * Vérifie que `API_URL` pointe vers un backend **déployé et accessible**.
+  * Si tu utilises Render/railway/etc., patiente après le *cold start* du service et réessaie.
+* **Problèmes d’environnement** :
+
+  * Assure-toi que l’environnement virtuel est **activé** et que `python -V` ≥ 3.9.
+* **Variables non lues** :
+
+  * Confirme la présence du fichier `.env` à la racine et l’appel à `load_dotenv()` dans l’app.
+
+---
+
+## ✍️ Auteur
+
+**Nyx Valen (Lou)** – Développeuse passionnée… et de cinéma nocturne. 🌙🖤
+
+---
+
+> *Que la nuit te soit douce, et tes recommandations percutantes.*
