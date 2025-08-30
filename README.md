@@ -1,66 +1,151 @@
 # CineNocturne 🎬
 
-## Description
+> *La nuit tombe, l’écran s’illumine : CineNocturne murmure les films qui te ressemblent.* 🌙🖤
 
-CineNocturne est une application de recommandation de films personnalisée. Elle permet aux utilisateurs de :
-	•	Rechercher et noter des films 🎯
-	•	Recevoir des recommandations personnalisées basées sur leurs goûts 🍿
-	•	Explorer des films par genre et par plateforme 📺
+---
 
-Tout cela dans une interface Streamlit fluide et esthétique, avec gestion des utilisateurs et monitoring MLOps via MLflow.
+## ✨ Description
 
-⸻
+CineNocturne est une application **Streamlit** de recommandation de films personnalisée. Elle permet de :
 
-## Fonctionnalités
-	1.	Connexion sécurisée 🔐
-Gestion simple des utilisateurs via variables d’environnement.
-	3.	Recommandations personnalisées 🎲
-	•	Basées sur les notes précédentes
-	•	Top 10 des films similaires
-	4.	Suggestions aléatoires ⚡
-	•	Par genre et plateforme
-	•	Limité à 10 films pour rapidité
-	5.	Plateformes disponibles 📺
-	•	Recherche par titre pour connaître toutes les plateformes de diffusion
-	6.	Optimisations 🚀
-	•	Caching des appels API pour accélérer le temps de traitement
-	•	Centralisation des affichages pour éviter les duplications
-	•	Compatible MLflow pour tracking et monitoring
+* **Rechercher et noter** des films 🎯
+* **Recevoir des recommandations** adaptées à tes goûts 🍿
+* **Explorer par genre** et **par plateforme** 📺
 
-⸻
+Le tout avec une interface fluide, une gestion simple des utilisateurs, et un **monitoring MLOps via MLflow**.
 
-## Installation
-	1.	Cloner le dépôt
+---
 
-```git clone https://github.com/PixelLouve/CineNocturne.git
+## 🗺️ Sommaire
+
+* [Fonctionnalités](#-fonctionnalités)
+* [Prérequis](#-prérequis)
+* [Installation](#-installation)
+* [Configuration](#-configuration)
+* [Lancement](#-lancement)
+* [Structure du projet](#-structure-du-projet)
+* [Utilisation](#-utilisation)
+* [Notes techniques](#-notes-techniques)
+* [Dépannage rapide](#-dépannage-rapide)
+* [Auteur](#-auteur)
+
+---
+
+## 🚀 Fonctionnalités
+
+1. **Connexion sécurisée** 🔐
+   Gestion simple des utilisateurs via variables d’environnement.
+2. **Recommandations personnalisées** 🎲
+
+   * Basées sur les notes précédentes
+   * Top 10 des films similaires
+3. **Suggestions aléatoires** ⚡
+
+   * Par genre et par plateforme
+   * Limité à 10 films pour la rapidité
+4. **Plateformes disponibles** 📺
+
+   * Recherche par titre pour connaître les plateformes de diffusion
+5. **Optimisations** 🚀
+
+   * Caching des appels API pour accélérer le temps de traitement
+   * Centralisation des affichages pour éviter les duplications
+   * Intégration **MLflow** pour le tracking et le monitoring
+
+---
+
+## 🧰 Prérequis
+
+* **Python 3.9+**
+* **pip** ou **uv/pipx** (au choix)
+* **virtualenv** / `venv`
+
+---
+
+## 📦 Installation
+
+1. **Cloner le dépôt**
+
+```bash
+git clone https://github.com/PixelLouve/CineNocturne.git
 cd CineNocturne
+```
 
-	2.	Créer un environnement virtuel
+2. **Créer et activer l’environnement virtuel**
 
-```python -m venv venv
-source venv/bin/activate  # Linux / Mac
-venv\Scripts\activate     # Windows
+```bash
+# Linux / macOS
+python -m venv venv
+source venv/bin/activate
+```
 
-	3.	Installer les dépendances
+```powershell
+# Windows (PowerShell)
+python -m venv venv
+venv\Scripts\Activate.ps1
+```
 
-```pip install -r requirements.txt
+3. **Installer les dépendances**
 
-	4.	Configurer les variables d’environnement
+```bash
+pip install -r requirements.txt
+```
 
-```# Exemple pour Linux / Mac
+---
+
+## 🔧 Configuration
+
+Tu peux configurer l’appli via **variables d’environnement** (recommandé avec un fichier `.env`).
+
+### Variables attendues
+
+* `API_URL` : URL de l’API backend (ex. `https://cinenocturne.onrender.com/`)
+* `API_TOKEN` : jeton d’accès à l’API
+* `USERS` ou paires utilisateur/mot de passe (ex. `USER_LOU`) selon ton implémentation
+
+### Exemple `.env`
+
+Crée un fichier `.env` à la racine du projet :
+
+```env
+# Backend API
+API_URL="https://cinenocturne.onrender.com/"
+API_TOKEN="ton_token_api"
+
+# Utilisateurs (exemples)
+USER_LOU="motdepasse"
+# USER_ANOTHER="motdepasse2"
+```
+
+> 💡 Sur Linux/macOS, tu peux aussi exporter à la volée :
+
+```bash
 export API_TOKEN="ton_token_api"
 export USER_LOU="motdepasse"
-# Ajouter d'autres utilisateurs si nécessaire
+```
 
-	5.	Lancer l’application
+> 💡 Sur Windows PowerShell :
 
-```streamlit run E3_E4_API_app/reco_app_v2.py
+```powershell
+$env:API_TOKEN = "ton_token_api"
+$env:USER_LOU  = "motdepasse"
+```
 
+---
 
-⸻
+## ▶️ Lancement
 
-## Structure du projet
+```bash
+streamlit run E3_E4_API_app/reco_app_v2.py
+```
 
+Une URL locale sera affichée dans le terminal (ex. `http://localhost:8501`).
+
+---
+
+## 🗂️ Structure du projet
+
+```
 CineNocturne/
 │
 ├─ E3_E4_API_app/
@@ -69,34 +154,10 @@ CineNocturne/
 │  └─ logo_cinenocturne.png
 │
 ├─ requirements.txt
-├─ .env                    # Variables d'environnement (API_TOKEN, USERS)
+├─ .env                    # Variables d'environnement (API_URL, API_TOKEN, USERS)
 └─ README.md
+```
 
+---
 
-⸻
-
-## Utilisation
-	1.	Connexion
-	•	Entrez votre nom d’utilisateur et mot de passe.
-	2.	Onglet 1 : Recommandations perso
-	•	Cherchez un film que vous avez vu
-	•	Donnez-lui une note
-	•	Recevez vos recommandations personnalisées
-	3.	Onglet 2 : Suggestions aléatoires
-	•	Choisissez un genre et une ou des plateformes
-	•	Découvrez des films aléatoires
-	4.	Onglet 3 : Plateformes disponibles
-	•	Recherchez un film pour connaître toutes les plateformes où il est disponible
-
-⸻
-
-## Notes techniques
-	•	Caching : @st.cache_data pour réduire les appels API répétitifs.
-	•	Affichage centralisé : display_movie() pour uniformiser l’affichage des films.
-	•	MLflow : intégration pour tracker les notes et recommandations.
-	•	Optimisations : structure multithreadable et réutilisation des composants pour accélérer l’appli.
-
-⸻
-
-### Auteur
-Nyx Valen (Lou) – Développeuse passionnée et de cinéma nocturne. 🌙🖤
+## 🕹️ Utilisation
