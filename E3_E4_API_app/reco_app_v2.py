@@ -246,47 +246,43 @@ def main_app():
     
             def fetch_recommendations():
                 """
-                Récupère les recommandations depuis l'API et logge params + metrics dans MLflow.
-                Inclut movie_rating, pred_score, score_diff et score_final pour chaque film.
+                Récupère les recommandations depuis l'API et affiche les métriques/logs
+                déjà calculés côté serveur (FastAPI + MLflow). 
+                Pas de logging MLflow côté Streamlit.
                 """
                 try:
-                    mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
                     chosen_film = st.session_state.get("tab1_chosen")
                     if not chosen_film:
                         st.warning("⚠️ Aucun film sélectionné")
                         return
             
-                    run_name = f"streamlit_reco_{st.session_state.username}_{chosen_film}"
-                    with mlflow.start_run(run_name=run_name) as run:
+                    response = api_get(f"recommend_xgb_personalized/{chosen_film}", params={"top_k": 20})
+                    if response.status_code == 200:
+                        recos = response.json()
             
-                        mlflow.log_param("user", st.session_state.username)
-                        mlflow.log_param("film_input", chosen_film)
+                        # Filtrer les nouvelles recommandations
+                        new_recos = [
+                            r for r in recos 
+                            if r["title"] not in st.session_state.get("already_recommended", set())
+                        ][:10]
             
-                        response = api_get(f"recommend_xgb_personalized/{chosen_film}", params={"top_k": 20})
-                        if response.status_code == 200:
-                            recos = response.json()
-                            new_recos = [r for r in recos if r["title"] not in st.session_state.get("already_recommended", set())][:10]
+                        for r in new_recos:
+                            st.session_state["already_recommended"].add(r["title"])
             
-                            for idx, r in enumerate(new_recos):
-                                title = r["title"]
-                                st.session_state["already_recommended"].add(title)
+                        st.session_state["last_recos"] = new_recos
             
-                                # Log des metrics spécifiques par film
-                                mlflow.log_metric(f"{title}_movie_rating", r.get("movie_rating", 0))
-                                mlflow.log_metric(f"{title}_pred_score", r.get("pred_score", 0))
-                                mlflow.log_metric(f"{title}_score_diff", r.get("score_diff", 0))
-                                mlflow.log_metric(f"{title}_final_score", r.get("final_score", 0))
+                    else:
+                        st.error(response.json().get("detail", "Erreur inconnue"))
+                        st.session_state["last_recos"] = []
             
-                            st.session_state["last_recos"] = new_recos
-            
-                        else:
-                            st.error(response.json().get("detail", "Erreur inconnue"))
-                            st.session_state["last_recos"] = []
+                except requests.exceptions.RequestException:
+                    st.error("❌ Erreur de connexion avec le serveur")
+                    st.session_state["last_recos"] = []
             
                 except Exception as e:
-                    st.error(f"❌ Erreur : {e}")
+                    st.error(f"❌ Erreur inattendue : {e}")
                     st.session_state["last_recos"] = []
-                    mlflow.log_metric("error_flag", 1)
+
 
     
             # -----------------------------
@@ -460,4 +456,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
