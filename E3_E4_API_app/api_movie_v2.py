@@ -192,22 +192,20 @@ async def update_rating(payload: RatingUpdate):
 # ------------------------------
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    # Chercher le film
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    # --- Début MLflow run ---
-    with mlflow.start_run(run_name=f"recommend_{title}") as run:
-        logger.info(f"MLflow run ID: {run.info.run_id}")
-
+    # ------------------------
+    # Start MLflow run
+    # ------------------------
+    run = mlflow.start_run(run_name=f"recommend_{title}")
+    try:
         chosen_genres = set(genres_list_all[idx])
-
         vec = tfidf_matrix[idx].reshape(1, -1)
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
-        cosine_sim[idx] = -1  # exclure le film lui-même
-
+        cosine_sim[idx] = -1
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
         candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
 
@@ -240,44 +238,37 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         all_features = np.array(features_list)
         pred_scores = xgb_model.predict_proba(all_features)[:, 1]
 
-        # --- Normalisation des scores ---
+        # Normalisation
         min_score, max_score = pred_scores.min(), pred_scores.max()
-        if max_score > min_score:
-            pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score)
-        else:
-            pred_scores_scaled = np.zeros_like(pred_scores)  # ⚡ éviter le "1" pour tous
-        
-        # --- Sélection top K ---
+        pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score) if max_score > min_score else np.zeros_like(pred_scores)
+
         top_indices = np.argsort(pred_scores_scaled)[::-1][:top_k]
-        
+
         def sanitize_mlflow_key(title: str) -> str:
-            """Transforme un titre en clé valide MLflow"""
-            return re.sub(r"[^0-9a-zA-Z_\-\.]", "_", title)
-        
+            key = unidecode(title)
+            key = re.sub(r"[^0-9a-zA-Z_\-\.]", "_", key)
+            return key.lower()
+
         top_recos_list = []
-        
+
         for idx_top in top_indices:
             movie = movies_dict[candidate_titles[idx_top]]
             user_rating = movie.get("user_rating") or 0.0
             movie_rating = movie.get("rating") or 5.0
             pred_score_model = float(pred_scores_scaled[idx_top])
-        
-            # ⚡ Score final pour l'affichage à l'utilisateur
             score_final = 0.6 * pred_score_model + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
-        
+            score_diff = abs(pred_score_model - (user_rating / 10))
+
             key_safe = sanitize_mlflow_key(movie["title"])
-        
-            # --- Logging MLflow ---
-            mlflow.log_metric(f"pred_score_model_{key_safe}", pred_score_model)  # score pur du modèle
+
+            # Logging MLflow
+            mlflow.log_metric(f"pred_score_model_{key_safe}", pred_score_model)
             mlflow.log_metric(f"user_rating_{key_safe}", float(user_rating))
             mlflow.log_metric(f"movie_rating_{key_safe}", float(movie_rating))
-            mlflow.log_metric(f"score_final_{key_safe}", score_final)  # score combiné
-        
-            # Différence entre prediction et note utilisateur
-            score_diff = abs(pred_score_model - (user_rating / 10))
+            mlflow.log_metric(f"score_final_{key_safe}", score_final)
             mlflow.log_metric(f"score_diff_{key_safe}", score_diff)
-        
-            # Préparation de la sortie API
+
+            # Préparation de la sortie
             genres_raw = movie.get("genres", [])
             if isinstance(genres_raw, str):
                 genres_list = [g.strip() for g in genres_raw.replace(",", "|").split("|") if g.strip()]
@@ -285,34 +276,33 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 genres_list = [g.strip() for g in genres_raw if g.strip()]
             else:
                 genres_list = []
-        
+
             top_recos_list.append({
                 "title": movie["title"],
                 "poster_url": movie.get("poster_url"),
                 "releaseYear": movie.get("release_year"),
                 "genres": genres_list,
                 "synopsis": movie.get("synopsis"),
-                "platforms": [],  # dispo via movie-details
-                "pred_score": score_final  # on renvoie le score final à l'app
+                "platforms": [],
+                "pred_score": score_final,
+                "movie_rating": movie_rating,
+                "user_rating": user_rating,
+                "score_diff": score_diff,
+                "final_score": score_final
             })
-        
-        # --- Log global ---
+
+        # Log global
         mlflow.log_param("input_title", title)
         mlflow.log_param("top_k", top_k)
         mlflow.log_metric("max_pred_score_model", float(pred_scores_scaled.max()))
         mlflow.log_metric("min_pred_score_model", float(pred_scores_scaled.min()))
         mlflow.log_text(str([r["title"] for r in top_recos_list]), "top_recommended_titles.txt")
 
-        
-        # ⚡ Ici on log chaque score final, toujours sécurisé
-        for i, reco in enumerate(top_recos_list):
-            key_safe = sanitize_mlflow_key(reco["title"])
-            mlflow.log_metric(f"pred_score_{i}_{key_safe}", reco["pred_score"])
+        return top_recos_list
 
-
-    return top_recos_list
-
-    
+    finally:
+        mlflow.end_run()
+            
 # ------------------------------
 # Route: Fuzzy match
 # ------------------------------
@@ -535,6 +525,7 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
