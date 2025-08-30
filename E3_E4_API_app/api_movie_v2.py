@@ -7,9 +7,10 @@ import csv
 import logging
 import random
 import unicodedata
+import sys
+import re
 from datetime import datetime
 from typing import List
-import re
 
 import pandas as pd
 import numpy as np
@@ -24,35 +25,38 @@ from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel
 from rapidfuzz import process, fuzz
 from dotenv import load_dotenv
-import sys
-from unidecode import unidecode
-
 
 from E3_E4_API_app import config
 
-
-# Configuration du logger (mettre ça en début de fichier)
+# -----------------------------
+# Logger
+# -----------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-
+# -----------------------------
+# FastAPI app
+# -----------------------------
 app = FastAPI(title="🎬 Louve Movies API")
 
+# -----------------------------
+# MLflow configuration
+# -----------------------------
 mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
 mlflow.set_experiment("louve_movies_monitoring")
 
-# ------------------------------
-# Configuration BDD
-# ------------------------------
+# -----------------------------
+# Base de données
+# -----------------------------
 DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
 engine = create_engine(DATABASE_URL)
 
-# ------------------------------
+# -----------------------------
 # Chargement des modèles ML
-# ------------------------------
+# -----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
@@ -65,18 +69,15 @@ svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
 tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
 movie_index_df = pd.read_csv(os.path.join(MODEL_DIR, "movie_index.csv"))
 
-# ------------------------------
+# -----------------------------
 # Chargement des films depuis BDD
-# ------------------------------
+# -----------------------------
 with engine.connect() as conn:
     rows = conn.execute(
         text("SELECT movie_id, title, genres, release_year, synopsis, poster_url FROM movies")
     ).mappings().all()
 
-movies = []
-titles = []
-genres_list_all = []
-years = []
+movies, titles, genres_list_all, years = [], [], [], []
 
 for r in rows:
     genres_list = r["genres"].split("|") if r["genres"] else []
@@ -92,9 +93,9 @@ years_scaled = scaler_year.transform(np.array([[y] for y in years]))
 # Dict pour accès rapide par titre
 movies_dict = {movie["title"]: movie for movie in movies}
 
-# ------------------------------
+# -----------------------------
 # Fonction d'interprétation des scores
-# ------------------------------
+# -----------------------------
 def interpret_score(score: float) -> str:
     pct = int(score * 100)
     if score >= 0.85:
@@ -106,9 +107,9 @@ def interpret_score(score: float) -> str:
     else:
         return f"⚠️ Faible similarité ({pct}%)"
 
-# ------------------------------
+# -----------------------------
 # Tables plateformes
-# ------------------------------
+# -----------------------------
 PLATFORM_TABLES = {
     "netflix": "netflix",
     "prime": "prime",
@@ -117,11 +118,10 @@ PLATFORM_TABLES = {
     "apple": "apple"
 }
 
-# ------------------------------
+# -----------------------------
 # Authentification HTTP Basic / Bearer
-# ------------------------------
+# -----------------------------
 load_dotenv()
-
 USERNAME: str = os.getenv("API_USERNAME")
 PASSWORD: str = os.getenv("API_PASSWORD")
 API_TOKEN: str = os.getenv("API_TOKEN")
@@ -136,23 +136,21 @@ def verify_credentials(
     # Mode 1 : Basic Auth
     if credentials and credentials.username == USERNAME and credentials.password == PASSWORD:
         return True
-
     # Mode 2 : Bearer Token
     if api_key and api_key == f"Bearer {API_TOKEN}":
         return True
-
     raise HTTPException(status_code=401, detail="Non autorisé")
 
-# ------------------------------
+# -----------------------------
 # Pydantic model
-# ------------------------------
+# -----------------------------
 class RatingUpdate(BaseModel):
     title: str
     rating: float
 
-# ------------------------------
+# -----------------------------
 # Route: Mise à jour note utilisateur
-# ------------------------------
+# -----------------------------
 @app.post("/update_rating", dependencies=[Depends(verify_credentials)])
 async def update_rating(payload: RatingUpdate):
     title = payload.title
@@ -178,36 +176,35 @@ async def update_rating(payload: RatingUpdate):
             )
             if result.rowcount == 0:
                 raise HTTPException(status_code=404, detail=f"Film '{title}' non trouvé.")
+            return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
 
-        return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
-
-    except HTTPException:  # ⚡ On laisse passer le 404
+    except HTTPException:
         raise
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
-# ------------------------------
+# -----------------------------
 # Route: Recommandation XGB personnalisée
-# ------------------------------
+# -----------------------------
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
+    # Chercher le film
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    # ------------------------
-    # Start MLflow run
-    # ------------------------
-    run = mlflow.start_run(run_name=f"recommend_{title}")
-    try:
+    # --- Début MLflow run ---
+    with mlflow.start_run(run_name=f"recommend_{title}") as run:
+        logger.info(f"MLflow run ID: {run.info.run_id}")
         chosen_genres = set(genres_list_all[idx])
         vec = tfidf_matrix[idx].reshape(1, -1)
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
-        cosine_sim[idx] = -1
+        cosine_sim[idx] = -1  # exclure le film lui-même
+
+        # Top 50 candidates
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
         candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
 
@@ -240,37 +237,38 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         all_features = np.array(features_list)
         pred_scores = xgb_model.predict_proba(all_features)[:, 1]
 
-        # Normalisation
+        # Normalisation des scores
         min_score, max_score = pred_scores.min(), pred_scores.max()
-        pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score) if max_score > min_score else np.zeros_like(pred_scores)
+        if max_score > min_score:
+            pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score)
+        else:
+            pred_scores_scaled = np.zeros_like(pred_scores)  # éviter le "1" pour tous
 
+        # Sélection top K
         top_indices = np.argsort(pred_scores_scaled)[::-1][:top_k]
 
         def sanitize_mlflow_key(title: str) -> str:
-            key = unidecode(title)
-            key = re.sub(r"[^0-9a-zA-Z_\-\.]", "_", key)
-            return key.lower()
+            """Transforme un titre en clé valide MLflow"""
+            return re.sub(r"[^0-9a-zA-Z_\-\.]", "_", title)
 
         top_recos_list = []
-
         for idx_top in top_indices:
             movie = movies_dict[candidate_titles[idx_top]]
             user_rating = movie.get("user_rating") or 0.0
             movie_rating = movie.get("rating") or 5.0
             pred_score_model = float(pred_scores_scaled[idx_top])
             score_final = 0.6 * pred_score_model + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
-            score_diff = abs(pred_score_model - (user_rating / 10))
 
             key_safe = sanitize_mlflow_key(movie["title"])
-
-            # Logging MLflow
+            # --- Logging MLflow ---
             mlflow.log_metric(f"pred_score_model_{key_safe}", pred_score_model)
             mlflow.log_metric(f"user_rating_{key_safe}", float(user_rating))
             mlflow.log_metric(f"movie_rating_{key_safe}", float(movie_rating))
             mlflow.log_metric(f"score_final_{key_safe}", score_final)
+            score_diff = abs(pred_score_model - (user_rating / 10))
             mlflow.log_metric(f"score_diff_{key_safe}", score_diff)
 
-            # Préparation de la sortie
+            # Préparation sortie API
             genres_raw = movie.get("genres", [])
             if isinstance(genres_raw, str):
                 genres_list = [g.strip() for g in genres_raw.replace(",", "|").split("|") if g.strip()]
@@ -286,28 +284,25 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "genres": genres_list,
                 "synopsis": movie.get("synopsis"),
                 "platforms": [],
-                "pred_score": score_final,
-                "movie_rating": movie_rating,
-                "user_rating": user_rating,
-                "score_diff": score_diff,
-                "final_score": score_final
+                "pred_score": score_final
             })
 
-        # Log global
+        # --- Log global MLflow ---
         mlflow.log_param("input_title", title)
         mlflow.log_param("top_k", top_k)
         mlflow.log_metric("max_pred_score_model", float(pred_scores_scaled.max()))
         mlflow.log_metric("min_pred_score_model", float(pred_scores_scaled.min()))
         mlflow.log_text(str([r["title"] for r in top_recos_list]), "top_recommended_titles.txt")
 
+        for i, reco in enumerate(top_recos_list):
+            key_safe = sanitize_mlflow_key(reco["title"])
+            mlflow.log_metric(f"pred_score_{i}_{key_safe}", reco["pred_score"])
+
         return top_recos_list
 
-    finally:
-        mlflow.end_run()
-            
-# ------------------------------
+# -----------------------------
 # Route: Fuzzy match
-# ------------------------------
+# -----------------------------
 def normalize_text(text: str) -> str:
     text = text.strip()
     text = unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("utf-8")
@@ -326,13 +321,11 @@ async def fuzzy_match(title: str):
         limit=20,
         score_cutoff=70
     )
-
     if not matches:
         raise HTTPException(status_code=404, detail="Aucune correspondance ≥70% trouvée.")
 
     seen_titles = set()
     filtered = []
-
     for match in matches:
         norm_title, score, idx = match
         original_title = choices[idx][1]
@@ -354,10 +347,9 @@ async def fuzzy_match(title: str):
 
     return {"matches": filtered}
 
-
-# ------------------------------
+# -----------------------------
 # Route: Genres uniques
-# ------------------------------
+# -----------------------------
 @app.get("/genres/", dependencies=[Depends(verify_credentials)])
 async def get_unique_genres():
     try:
@@ -374,45 +366,37 @@ async def get_unique_genres():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-# ------------------------------
+# -----------------------------
 # Route: Détails d'un film
-# ------------------------------
+# -----------------------------
 @app.get("/movie-details/{title}", dependencies=[Depends(verify_credentials)])
 async def get_movie_details(title: str):
     try:
         query = f"""
-        SELECT 
-            m.movie_id,
-            m.title AS movie_title,
-            m.genres AS movie_genres,
-            m.release_year,
-            m.rating AS movie_rating,
-            m.synopsis,
-            m.poster_url,
-            p.platform_name
-        FROM movies m
-        LEFT JOIN (
-            SELECT 'Netflix' AS platform_name, title FROM netflix
-            UNION
-            SELECT 'Prime' AS platform_name, title FROM prime
-            UNION
-            SELECT 'Hulu' AS platform_name, title FROM hulu
-            UNION
-            SELECT 'HBO Max' AS platform_name, title FROM hbo
-            UNION
-            SELECT 'Apple' AS platform_name, title FROM apple
-        ) p
-        ON m.title = p.title
-        WHERE LOWER(m.title) = LOWER(:title)
+            SELECT m.movie_id, m.title AS movie_title, m.genres AS movie_genres, m.release_year, 
+                   m.rating AS movie_rating, m.synopsis, m.poster_url, p.platform_name
+            FROM movies m
+            LEFT JOIN (
+                SELECT 'Netflix' AS platform_name, title FROM netflix
+                UNION
+                SELECT 'Prime' AS platform_name, title FROM prime
+                UNION
+                SELECT 'Hulu' AS platform_name, title FROM hulu
+                UNION
+                SELECT 'HBO Max' AS platform_name, title FROM hbo
+                UNION
+                SELECT 'Apple' AS platform_name, title FROM apple
+            ) p ON m.title = p.title
+            WHERE LOWER(m.title) = LOWER(:title)
         """
         with engine.connect() as conn:
             result = conn.execute(text(query), {"title": title}).fetchall()
+            if not result:
+                raise HTTPException(status_code=404, detail="Film non trouvé.")
 
-        if not result:
-            raise HTTPException(status_code=404, detail="Film non trouvé.")  # ✅ avant d'accéder à row[7]
+            first = result[0]
+            platforms = list({row[7] for row in result if row[7]})
 
-        first = result[0]
-        platforms = list({row[7] for row in result if row[7]})
         return {
             "movie_id": first[0],
             "title": first[1],
@@ -423,17 +407,17 @@ async def get_movie_details(title: str):
             "poster_url": first[6],
             "platforms": platforms
         }
-    
-    except HTTPException:  # ✅ ne pas avaler ton 404
+
+    except HTTPException:
         raise
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-# ------------------------------
+# -----------------------------
 # Route: Films aléatoires par genre et plateforme
-# ------------------------------
+# -----------------------------
 @app.get("/random_movies/", dependencies=[Depends(verify_credentials)])
 async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit: int = 10):
     try:
@@ -445,10 +429,10 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
         with engine.connect() as conn:
             for platform in selected_platforms:
                 query = f"""
-                SELECT m.title, m.synopsis, m.poster_url, m.genres, '{platform}' AS platform
-                FROM movies m
-                JOIN {platform} p ON m.title = p.title
-                WHERE FIND_IN_SET(:genre, m.genres)
+                    SELECT m.title, m.synopsis, m.poster_url, m.genres, '{platform}' AS platform
+                    FROM movies m
+                    JOIN {platform} p ON m.title = p.title
+                    WHERE FIND_IN_SET(:genre, m.genres)
                 """
                 result = conn.execute(text(query), {"genre": genre}).fetchall()
                 for row in result:
@@ -465,51 +449,42 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
 
         return random.sample(movies, min(limit, len(movies)))
 
-    except HTTPException:  # ⚡ protégé (400 & 404)
+    except HTTPException:
         raise
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
-# ------------------------------
+# -----------------------------
 # Route: Téléchargement CSV
-# ------------------------------
+# -----------------------------
 @app.get("/download-movie-details/", dependencies=[Depends(verify_credentials)])
 async def download_movie_details():
     try:
         query = f"""
-        SELECT 
-            m.movie_id,
-            m.title AS movie_title,
-            m.genres AS movie_genres,
-            m.release_year,
-            m.rating AS movie_rating,
-            m.synopsis,
-            m.poster_url,
-            COALESCE(p.platform_name, 'Not available') AS platform_name
-        FROM movies m
-        LEFT JOIN (
-            SELECT 'Netflix' AS platform_name, title FROM netflix
-            UNION
-            SELECT 'Prime' AS platform_name, title FROM prime
-            UNION
-            SELECT 'Hulu' AS platform_name, title FROM hulu
-            UNION
-            SELECT 'HBO Max' AS platform_name, title FROM hbo
-            UNION
-            SELECT 'Apple' AS platform_name, title FROM apple
-        ) p
-        ON m.title = p.title
-        ORDER BY m.title;
+            SELECT m.movie_id, m.title AS movie_title, m.genres AS movie_genres, m.release_year,
+                   m.rating AS movie_rating, m.synopsis, m.poster_url,
+                   COALESCE(p.platform_name, 'Not available') AS platform_name
+            FROM movies m
+            LEFT JOIN (
+                SELECT 'Netflix' AS platform_name, title FROM netflix
+                UNION
+                SELECT 'Prime' AS platform_name, title FROM prime
+                UNION
+                SELECT 'Hulu' AS platform_name, title FROM hulu
+                UNION
+                SELECT 'HBO Max' AS platform_name, title FROM hbo
+                UNION
+                SELECT 'Apple' AS platform_name, title FROM apple
+            ) p ON m.title = p.title
+            ORDER BY m.title;
         """
         with engine.connect() as conn:
             result = conn.execute(text(query))
             rows = result.fetchall()
-
-        if not rows:
-            raise HTTPException(status_code=404, detail="Aucune donnée à télécharger.")
+            if not rows:
+                raise HTTPException(status_code=404, detail="Aucune donnée à télécharger.")
 
         csv_file = io.StringIO()
         csv_writer = csv.writer(csv_file)
@@ -522,15 +497,8 @@ async def download_movie_details():
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=movie_details.csv"}
         )
+
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
-
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
-
-
-
-
-
-
