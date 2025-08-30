@@ -195,15 +195,15 @@ def main_app():
             return []
     
         if st.button("Chercher", key="btn_tab1") and film_input:
-            if film_input != st.session_state.get("last_film_searched"):
-                matches = get_fuzzy_matches(film_input)
-                st.session_state["fuzzy_matches_tab1"] = matches
-                st.session_state["last_film_searched"] = film_input
-                st.session_state["tab1_chosen"] = None
-                st.session_state["already_recommended"] = set()
-                st.session_state["last_recos"] = []
-                if not matches:
-                    st.warning("⚠️ Aucun film trouvé avec ce titre.")
+            matches = get_fuzzy_matches(film_input)
+            st.session_state["fuzzy_matches_tab1"] = matches
+            st.session_state["last_film_searched"] = film_input
+            st.session_state["tab1_chosen"] = None
+            st.session_state["already_recommended"] = set()
+            st.session_state["last_recos"] = []
+        
+            if not matches:
+                st.warning("⚠️ Aucun film trouvé avec ce titre.")
     
         # -----------------------------
         # Sélection du film
@@ -442,4 +442,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
