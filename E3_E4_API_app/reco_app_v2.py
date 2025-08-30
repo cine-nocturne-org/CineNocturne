@@ -31,9 +31,10 @@ USERS = {k.replace("USER_", "").lower(): v for k, v in os.environ.items() if k.s
 # Fonctions utilitaires API
 # -----------------------------
 @st.cache_data(show_spinner=False)
-def cached_api_get(endpoint: str, params: dict = None):
-    headers = {"Authorization": f"Bearer {st.session_state.api_token}"}
+def cached_api_get(endpoint: str, api_token: str, params: dict = None):
+    headers = {"Authorization": f"Bearer {api_token}"}
     return requests.get(f"{API_URL}{endpoint}", headers=headers, params=params)
+
 
 @st.cache_data(show_spinner=False)
 def cached_api_post(endpoint: str, payload: dict):
@@ -76,8 +77,8 @@ def logout():
 # -----------------------------
 # Film selector optimisé (posters en parallèle)
 # -----------------------------
-def fetch_movie_details(match):
-    details_resp = cached_api_get(f"movie-details/{match['title']}")
+def fetch_movie_details(match, api_token):
+    details_resp = cached_api_get(f"movie-details/{match['title']}", api_token)
     poster_url = None
     movie_id = match.get("movie_id")
     if details_resp.status_code == 200:
@@ -93,7 +94,7 @@ def fetch_movie_details(match):
 def film_selector(matches: List[Dict], state_key_prefix: str):
     matches_info = []
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(fetch_movie_details, m) for m in matches]
+        futures = [executor.submit(fetch_movie_details, m, st.session_state.api_token) for m in matches]
         for future in as_completed(futures):
             matches_info.append(future.result())
 
@@ -402,3 +403,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
