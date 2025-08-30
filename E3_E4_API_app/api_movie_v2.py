@@ -25,6 +25,8 @@ from pydantic import BaseModel
 from rapidfuzz import process, fuzz
 from dotenv import load_dotenv
 import sys
+from unidecode import unidecode
+
 
 from E3_E4_API_app import config
 
@@ -525,6 +527,7 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
