@@ -186,145 +186,100 @@ async def update_rating(payload: RatingUpdate):
 # ------------------------------
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    import tempfile, json, os  # pour artifacts
-    # 1) Chercher le film d'entrée
+    # Chercher le film de départ
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    top_recos_list = []
+    with mlflow.start_run(run_name=f"recommend_{title}") as run:
+        run_id = run.info.run_id
+        client = MlflowClient()
+        ts = int(time.time() * 1000)
 
-    # 2) Démarrer le run MLflow avec des clés stables
-    with mlflow.start_run(run_name=f"recommend_{title}"):
-        run_id = mlflow.active_run().info.run_id
-        logger.info(f"MLflow run ID: {run_id}")
-
-        # Tags + params stables
-        mlflow.set_tags({
-            "stage": "inference",
-            "component": "xgb_recommender",
-            "source": "api",
-        })
-        mlflow.log_param("input_title", title)
-        mlflow.log_param("top_k", int(top_k))
-
-        # 3) Noter la rating utilisateur / rating global du film d'entrée (1 seule clé par metric)
-        input_movie = movies_dict.get(title, {})
-        input_user_rating = float(input_movie.get("user_rating") or 0.0)
-        input_movie_rating = float(input_movie.get("rating") or 5.0)
-        mlflow.log_metric("user_rating", input_user_rating)
-        mlflow.log_metric("movie_rating", input_movie_rating)
-
-        # 4) Candidats par similarité TF-IDF + filtrage par genres
         chosen_genres = set(genres_list_all[idx])
+
         vec = tfidf_matrix[idx].reshape(1, -1)
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
         cosine_sim[idx] = -1  # exclure le film lui-même
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
-        candidate_indices = [
-            i for i in candidate_indices
-            if chosen_genres & set(genres_list_all[i])
-        ]
+        candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
 
-        if not candidate_indices:
-            # Rien à recommander : on log l'info et on renvoie une liste vide
-            mlflow.log_param("n_candidates", 0)
-            return []
-
-        mlflow.log_param("n_candidates", int(len(candidate_indices)))
-
-        # 5) Features pour XGB
         features_list = []
         candidate_titles = []
+
         for i in candidate_indices:
             svd_vec = svd_full.transform(tfidf_matrix[i])
             nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
-            # on ignore la distance au voisin "soi-même" si présent
-            sims = 1 - nn_distances[0][1:] if nn_distances.shape[1] > 1 else np.array([0.0])
-
-            neighbor_mean = sims.mean()
-            neighbor_max = sims.max()
-            neighbor_min = sims.min()
-            neighbor_std = sims.std()
+            neighbor_mean = (1 - nn_distances[0][1:]).mean()
+            neighbor_max = (1 - nn_distances[0][1:]).max()
+            neighbor_min = (1 - nn_distances[0][1:]).min()
+            neighbor_std = (1 - nn_distances[0][1:]).std()
 
             feature_vec = np.hstack([
                 svd_vec[0],
                 genres_encoded_matrix[i],
                 years_scaled[i],
-                neighbor_mean, neighbor_max, neighbor_min, neighbor_std
+                neighbor_mean,
+                neighbor_max,
+                neighbor_min,
+                neighbor_std
             ])
             features_list.append(feature_vec)
             candidate_titles.append(titles[i])
 
         if not features_list:
-            mlflow.log_param("n_candidates", 0)
             return []
 
         all_features = np.array(features_list)
         pred_scores = xgb_model.predict_proba(all_features)[:, 1]
 
-        # 6) Normalisation 0-1 robuste
+        # Normalisation
         min_score, max_score = pred_scores.min(), pred_scores.max()
-        if max_score > min_score:
-            pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score)
-        else:
-            pred_scores_scaled = np.ones_like(pred_scores)
+        pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score) if max_score > min_score else np.ones_like(pred_scores)
 
-        # Top-K
         top_indices = np.argsort(pred_scores_scaled)[::-1][:top_k]
 
-        # 7) Construction des recos + logging propre
-        rows_for_artifact = []
-        for rank, idx_top in enumerate(top_indices, start=1):
-            mv_title = candidate_titles[idx_top]
-            movie = movies_dict.get(mv_title, {})
+        top_recos_list = []
+        metrics_batch = []
 
+        for rank, idx_top in enumerate(top_indices, start=1):
+            movie = movies_dict[candidate_titles[idx_top]]
             user_rating = float(movie.get("user_rating") or 0.0)
             movie_rating = float(movie.get("rating") or 5.0)
-            final_score = (
-                0.6 * float(pred_scores_scaled[idx_top]) +
-                0.25 * (user_rating / 10.0) +
-                0.15 * (movie_rating / 10.0)
-            )
+            score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
 
-            # 🔹 Metrics sérialisées par rang (clé stable + step)
-            mlflow.log_metric("pred_score", float(pred_scores_scaled[idx_top]), step=rank)
-            mlflow.log_metric("final_score", float(final_score), step=rank)
-            mlflow.log_metric("score_diff", abs(float(pred_scores_scaled[idx_top]) - (user_rating / 10.0)), step=rank)
-
-            rows_for_artifact.append({
-                "rank": rank,
-                "title": mv_title,
-                "pred_score_scaled": float(pred_scores_scaled[idx_top]),
-                "user_rating": user_rating,
-                "movie_rating": movie_rating,
-                "final_score": float(final_score),
-            })
+            metrics_batch.extend([
+                {"key": "pred_score", "value": float(pred_scores_scaled[idx_top]), "timestamp": ts, "step": rank},
+                {"key": "final_score", "value": float(score_final), "timestamp": ts, "step": rank},
+                {"key": "score_diff", "value": abs(pred_scores_scaled[idx_top] - (user_rating / 10)), "timestamp": ts, "step": rank},
+            ])
 
             top_recos_list.append({
-                "title": movie.get("title", mv_title),
+                "title": movie["title"],
                 "poster_url": movie.get("poster_url"),
                 "genres": movie.get("genres"),
                 "synopsis": movie.get("synopsis"),
-                "pred_score": float(final_score),
+                "pred_score": float(score_final)
             })
 
-        # 8) Résumés + artifacts tabulaires
-        mlflow.log_metric("max_pred_score", float(pred_scores_scaled.max()))
-        mlflow.log_metric("min_pred_score", float(pred_scores_scaled.min()))
+        # Batch log → 1 seul aller-retour vers la DB MLflow
+        client.log_batch(
+            run_id=run_id,
+            metrics=metrics_batch,
+            params=[
+                {"key": "input_title", "value": title},
+                {"key": "top_k", "value": str(int(top_k))}
+            ],
+            tags={"stage": "inference", "component": "xgb_recommender", "source": "api"}
+        )
 
-        # Artifacts : table des recommandations + liste des titres
-        import pandas as pd
-        df_recos = pd.DataFrame(rows_for_artifact)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path_csv = os.path.join(tmpdir, "recommendations.csv")
-            path_json = os.path.join(tmpdir, "top_titles.json")
-            df_recos.to_csv(path_csv, index=False)
+        # Artifact : liste des titres recommandés
+        with tempfile.TemporaryDirectory() as tmp:
+            path_json = os.path.join(tmp, "top_recommended_titles.json")
             with open(path_json, "w", encoding="utf-8") as f:
                 json.dump([r["title"] for r in top_recos_list], f, ensure_ascii=False, indent=2)
-            mlflow.log_artifact(path_csv)
             mlflow.log_artifact(path_json)
 
     return top_recos_list
@@ -550,4 +505,5 @@ async def download_movie_details():
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
+
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
