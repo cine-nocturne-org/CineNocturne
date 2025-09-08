@@ -22,6 +22,7 @@ from datetime import datetime
 import os
 import csv
 import mlflow
+from mlflow.tracking import MlflowClient
 from dotenv import load_dotenv
 import logging
 import tempfile
@@ -147,15 +148,12 @@ def normalize_text(text: str) -> str:
 
 def mlflow_start_inference_run(input_title: str, top_k: int):
     mlflow.set_experiment("louve_movies_monitoring")
-    run = mlflow.start_run(run_name=f"recommend_{input_title}")
-    mlflow.set_tags({
-        "stage": "inference",
-        "component": "xgb_recommender",
-        "source": "api",
-    })
-    mlflow.log_param("input_title", input_title)
-    mlflow.log_param("top_k", int(top_k))
-    return run
+    # 🔒 si un run est encore actif (exception précédente / requête précédente), on le ferme
+    if mlflow.active_run() is not None:
+        mlflow.end_run()
+    # on renvoie l’objet contexte ActiveRun
+    return mlflow.start_run(run_name=f"recommend_{input_title}")
+
 
 # ======================
 # 📦 Pydantic Models
@@ -216,120 +214,146 @@ async def update_rating(payload: RatingUpdate):
 # -- Recommandations XGB personnalisées (publique pour l’UI)
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    # 1) Film d'entrée
+    """
+    Endpoint de recommandation :
+    - construit des candidats via similarité TF-IDF + filtre genres
+    - score via XGB + réajustements (user_rating, movie_rating)
+    - logge dans MLflow (metrics + artifacts)
+    - ferme automatiquement le run à la fin (context manager)
+    """
+    # 1) Trouver l'index du film d'entrée
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    # 2) Run MLflow
-    run = mlflow_start_inference_run(input_title=title, top_k=top_k)
-    run_id = mlflow.active_run().info.run_id
-    logger.info(f"[MLflow] Inference run_id={run_id}")
+    # 2) Démarrer un run MLflow dans un contexte (auto-close)
+    with mlflow_start_inference_run(input_title=title, top_k=top_k) as run:
+        run_id = run.info.run_id
+        logger.info(f"[MLflow] Inference run_id={run_id}")
 
-    # 3) Ratings du film d'entrée
-    input_movie = movies_dict.get(title, {})
-    input_user_rating = float(input_movie.get("user_rating") or 0.0)
-    input_movie_rating = float(input_movie.get("rating") or 5.0)
-    mlflow.log_metric("user_rating", input_user_rating)
-    mlflow.log_metric("movie_rating", input_movie_rating)
-
-    # 4) Candidats par similarité TF-IDF + filtre genres
-    chosen_genres = set(genres_list_all[idx])
-    vec = tfidf_matrix[idx].reshape(1, -1)
-    cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
-    cosine_sim[idx] = -1  # exclure soi-même
-
-    candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
-    candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
-
-    mlflow.log_metric("n_candidates", int(len(candidate_indices)))
-    if not candidate_indices:
-        # on ferme le run proprement même si vide
-        mlflow.end_run()
-        return {"run_id": run_id, "recommendations": []}
-
-    # 5) Features XGB
-    features_list, candidate_titles = [], []
-    for i in candidate_indices:
-        svd_vec = svd_full.transform(tfidf_matrix[i])
-        nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
-        sims = 1 - nn_distances[0][1:] if nn_distances.shape[1] > 1 else np.array([0.0])
-
-        feature_vec = np.hstack([
-            svd_vec[0],
-            genres_encoded_matrix[i],
-            years_scaled[i],
-            sims.mean(), sims.max(), sims.min(), sims.std()
-        ])
-        features_list.append(feature_vec)
-        candidate_titles.append(titles[i])
-
-    if not features_list:
-        mlflow.log_metric("n_candidates", 0)
-        mlflow.end_run()
-        return {"run_id": run_id, "recommendations": []}
-
-    X = np.array(features_list)
-    proba = xgb_model.predict_proba(X)[:, 1]
-
-    # 6) Normalisation robuste 0-1
-    mn, mx = float(proba.min()), float(proba.max())
-    proba_scaled = (proba - mn) / (mx - mn) if mx > mn else np.ones_like(proba)
-
-    # 7) Top-K + construction réponses + logging par rang
-    top_idx = np.argsort(proba_scaled)[::-1][:top_k]
-
-    recos, rows = [], []
-    for rank, idx_top in enumerate(top_idx, start=1):
-        mv_title = candidate_titles[idx_top]
-        movie = movies_dict.get(mv_title, {})
-        user_rating = float(movie.get("user_rating") or 0.0)
-        movie_rating = float(movie.get("rating") or 5.0)
-
-        final_score = 0.6 * float(proba_scaled[idx_top]) + \
-                      0.25 * (user_rating / 10.0) + \
-                      0.15 * (movie_rating / 10.0)
-        pred_label = int(final_score >= 0.5)
-
-        mlflow.log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
-        mlflow.log_metric("final_score", float(final_score), step=rank)
-
-        rows.append({
-            "rank": rank,
-            "title": mv_title,
-            "pred_score_scaled": float(proba_scaled[idx_top]),
-            "user_rating": user_rating,
-            "movie_rating": movie_rating,
-            "final_score": float(final_score),
-            "pred_label": pred_label
+        # Tags + paramètres de base
+        mlflow.set_tags({
+            "stage": "inference",
+            "component": "xgb_recommender",
+            "source": "api",
         })
+        mlflow.log_param("input_title", title)
+        mlflow.log_param("top_k", int(top_k))
 
-        recos.append({
-            "title": movie.get("title", mv_title),
-            "poster_url": movie.get("poster_url"),
-            "genres": movie.get("genres"),
-            "synopsis": movie.get("synopsis"),
-            "pred_score": float(final_score),
-            "pred_label": pred_label
-        })
+        # 3) Notes du film d'entrée
+        input_movie = movies_dict.get(title, {})
+        input_user_rating = float(input_movie.get("user_rating") or 0.0)
+        input_movie_rating = float(input_movie.get("rating") or 5.0)
+        mlflow.log_metric("user_rating", input_user_rating)
+        mlflow.log_metric("movie_rating", input_movie_rating)
 
-    mlflow.log_metric("max_pred_score", float(proba_scaled.max()))
-    mlflow.log_metric("min_pred_score", float(proba_scaled.min()))
+        # 4) Candidats par similarité TF-IDF + filtre genres
+        chosen_genres = set(genres_list_all[idx])
+        vec = tfidf_matrix[idx].reshape(1, -1)
+        cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
+        cosine_sim[idx] = -1.0  # exclure le film lui-même
 
-    # 8) Artifacts tabulaires
-    df_recos = pd.DataFrame(rows)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path_csv = os.path.join(tmpdir, "recommendations.csv")
-        path_json = os.path.join(tmpdir, "top_titles.json")
-        df_recos.to_csv(path_csv, index=False)
-        with open(path_json, "w", encoding="utf-8") as f:
-            json.dump([r["title"] for r in recos], f, ensure_ascii=False, indent=2)
-        mlflow.log_artifact(path_csv)
-        mlflow.log_artifact(path_json)
+        candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
+        candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
+        mlflow.log_metric("n_candidates", int(len(candidate_indices)))
 
-    # ⚠️ On laisse le run OUVERT : le feedback va l’enrichir (online_accuracy)
-    return {"run_id": run_id, "recommendations": recos}
+        if not candidate_indices:
+            return {"run_id": run_id, "recommendations": []}
+
+        # 5) Features pour XGB
+        features_list, candidate_titles = [], []
+        for i in candidate_indices:
+            svd_vec = svd_full.transform(tfidf_matrix[i])
+            nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
+            sims = 1 - nn_distances[0][1:] if nn_distances.shape[1] > 1 else np.array([0.0])
+
+            feature_vec = np.hstack([
+                svd_vec[0],
+                genres_encoded_matrix[i],
+                years_scaled[i],
+                sims.mean(), sims.max(), sims.min(), sims.std()
+            ])
+            features_list.append(feature_vec)
+            candidate_titles.append(titles[i])
+
+        if not features_list:
+            mlflow.log_metric("n_candidates", 0)
+            return {"run_id": run_id, "recommendations": []}
+
+        X = np.array(features_list)
+        proba = xgb_model.predict_proba(X)[:, 1]
+
+        # 6) Normalisation robuste 0–1
+        mn, mx = float(proba.min()), float(proba.max())
+        proba_scaled = (proba - mn) / (mx - mn) if mx > mn else np.ones_like(proba)
+
+        # 7) Top-K + construction des recos + logging par rang
+        top_idx = np.argsort(proba_scaled)[::-1][:top_k]
+
+        recos, rows_for_table = [], []
+        for rank, idx_top in enumerate(top_idx, start=1):
+            mv_title = candidate_titles[idx_top]
+            movie = movies_dict.get(mv_title, {})
+            user_rating = float(movie.get("user_rating") or 0.0)
+            movie_rating = float(movie.get("rating") or 5.0)
+
+            final_score = (
+                0.6 * float(proba_scaled[idx_top]) +
+                0.25 * (user_rating / 10.0) +
+                0.15 * (movie_rating / 10.0)
+            )
+            pred_label = int(final_score >= 0.5)
+
+            # Metrics par rang
+            mlflow.log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
+            mlflow.log_metric("final_score", float(final_score), step=rank)
+
+            rows_for_table.append({
+                "rank": rank,
+                "title": mv_title,
+                "pred_score_scaled": float(proba_scaled[idx_top]),
+                "user_rating": user_rating,
+                "movie_rating": movie_rating,
+                "final_score": float(final_score),
+                "pred_label": pred_label,
+            })
+
+            recos.append({
+                "title": movie.get("title", mv_title),
+                "poster_url": movie.get("poster_url"),
+                "genres": movie.get("genres"),
+                "synopsis": movie.get("synopsis"),
+                "pred_score": float(final_score),
+                "pred_label": pred_label,
+            })
+
+        mlflow.log_metric("max_pred_score", float(proba_scaled.max()))
+        mlflow.log_metric("min_pred_score", float(proba_scaled.min()))
+
+        # 8) Artifacts (format JSON + tableau)
+        try:
+            # MLflow ≥ 2.9
+            import pandas as _pd  # déjà importé en haut, mais sécurité
+            df_recos = _pd.DataFrame(rows_for_table)
+            # log_table si dispo
+            if hasattr(mlflow, "log_table"):
+                mlflow.log_table(df_recos, artifact_file="recommendations.parquet")
+            else:
+                # fallback CSV temporaire
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    path_csv = os.path.join(tmpdir, "recommendations.csv")
+                    df_recos.to_csv(path_csv, index=False)
+                    mlflow.log_artifact(path_csv)
+            # Liste des titres recommandés
+            mlflow.log_dict([r["title"] for r in recos], artifact_file="top_titles.json")
+        except Exception as _:
+            # En cas d'échec artifact, on continue sans planter l'API
+            pass
+
+        # Le run est automatiquement FERMÉ à la sortie du `with`
+        return {"run_id": run_id, "recommendations": recos}
+
 
 
 # -- Enregistrer le feedback utilisateur (like/dislike) + accuracy online
@@ -362,11 +386,10 @@ async def log_feedback(payload: FeedbackPayload):
         correct, total = (row[0] or 0), (row[1] or 0)
         online_accuracy = float(correct) / float(total) if total > 0 else 0.0
 
-        # 3) Log dans le même run
-        mlflow.set_experiment("louve_movies_monitoring")
-        with mlflow.start_run(run_id=payload.run_id):
-            mlflow.log_metric("online_accuracy", online_accuracy, step=total)
-            mlflow.log_metric("feedback_count", total)
+        # 3) Log sans rouvrir le run (évite "already active")
+        client = MlflowClient()
+        client.log_metric(run_id=payload.run_id, key="online_accuracy", value=online_accuracy, step=total)
+        client.log_metric(run_id=payload.run_id, key="feedback_count", value=total, step=total)
 
         return {"message": "Feedback enregistré", "online_accuracy": online_accuracy, "count": total}
 
@@ -374,6 +397,7 @@ async def log_feedback(payload: FeedbackPayload):
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 # -- Fuzzy match titres
@@ -602,3 +626,4 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
