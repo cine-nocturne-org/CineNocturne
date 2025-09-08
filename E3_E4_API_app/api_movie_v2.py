@@ -192,16 +192,18 @@ async def update_rating(payload: RatingUpdate):
 # ------------------------------
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
+    # --- Trouver l'index du film demandé
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
     with mlflow.start_run(run_name=f"recommend_{title}") as run:
-        run_id = run.info.run_id
         client = MlflowClient()
+        run_id = run.info.run_id
         ts = int(time.time() * 1000)
 
+        # --- Candidats par similarité TF-IDF + filtre genres
         chosen_genres = set(genres_list_all[idx])
         vec = tfidf_matrix[idx].reshape(1, -1)
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
@@ -209,29 +211,24 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
         candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
-
         if not candidate_indices:
+            mlflow.set_tags({"stage": "inference", "component": "xgb_recommender", "source": "api"})
+            mlflow.log_param("input_title", title)
+            mlflow.log_param("top_k", int(top_k))
+            mlflow.log_param("n_candidates", 0)
             return []
 
-        features_list = []
-        candidate_titles = []
-
+        # --- Features XGB
+        features_list, candidate_titles = [], []
         for i in candidate_indices:
             svd_vec = svd_full.transform(tfidf_matrix[i])
             nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
-            neighbor_mean = (1 - nn_distances[0][1:]).mean()
-            neighbor_max = (1 - nn_distances[0][1:]).max()
-            neighbor_min = (1 - nn_distances[0][1:]).min()
-            neighbor_std = (1 - nn_distances[0][1:]).std()
-
+            sims = 1 - nn_distances[0][1:]
             feature_vec = np.hstack([
                 svd_vec[0],
                 genres_encoded_matrix[i],
                 years_scaled[i],
-                neighbor_mean,
-                neighbor_max,
-                neighbor_min,
-                neighbor_std
+                sims.mean(), sims.max(), sims.min(), sims.std()
             ])
             features_list.append(feature_vec)
             candidate_titles.append(titles[i])
@@ -239,58 +236,81 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         all_features = np.array(features_list)
         pred_scores = xgb_model.predict_proba(all_features)[:, 1]
 
-        # Normalisation
-        min_score, max_score = pred_scores.min(), pred_scores.max()
-        pred_scores_scaled = (pred_scores - min_score) / (max_score - min_score) if max_score > min_score else np.ones_like(pred_scores)
+        # --- Normalisation 0-1
+        smin, smax = pred_scores.min(), pred_scores.max()
+        pred_scores_scaled = (pred_scores - smin) / (smax - smin) if smax > smin else np.ones_like(pred_scores)
 
+        # --- Top-K
         top_indices = np.argsort(pred_scores_scaled)[::-1][:top_k]
 
+        # --- Préparer reco + métriques par rang
         top_recos_list = []
         metrics_batch = []
-
         for rank, idx_top in enumerate(top_indices, start=1):
             movie = movies_dict[candidate_titles[idx_top]]
-            user_rating = float(movie.get("user_rating") or 0.0)
-            movie_rating = float(movie.get("rating") or 5.0)
-            score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
+            user_rating = float(movie.get("user_rating") or 0.0)        # 0..10
+            movie_rating = float(movie.get("rating") or 5.0)            # 0..10
 
-            # Transformation en objets MLflow Metric
+            # score final pondéré
+            final = 0.6 * float(pred_scores_scaled[idx_top]) + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
+
+            # log par rang (avec step)
             metrics_batch.extend([
-                Metric(key="pred_score", value=float(pred_scores_scaled[idx_top]), timestamp=ts, step=rank),
-                Metric(key="final_score", value=float(score_final), timestamp=ts, step=rank),
-                Metric(key="score_diff", value=abs(pred_scores_scaled[idx_top] - (user_rating / 10)), timestamp=ts, step=rank),
+                Metric(key="rank_pred_score",  value=float(pred_scores_scaled[idx_top]), timestamp=ts, step=rank),
+                Metric(key="rank_final_score", value=float(final),                         timestamp=ts, step=rank),
             ])
 
             top_recos_list.append({
+                "rank": rank,
                 "title": movie["title"],
                 "poster_url": movie.get("poster_url"),
                 "genres": movie.get("genres"),
                 "synopsis": movie.get("synopsis"),
-                "pred_score": float(score_final)
+                "pred_score": float(pred_scores_scaled[idx_top]),
+                "final_score": float(final),
             })
 
-        # Conversion params et tags en objets MLflow
-        mlflow_params = [
-            Param(key="input_title", value=title),
-            Param(key="top_k", value=str(top_k))
-        ]
-        mlflow_tags = [
-            RunTag(key="stage", value="inference"),
-            RunTag(key="component", value="xgb_recommender"),
-            RunTag(key="source", value="api")
-        ]
+        # --- Résumé agrégé pour remplir les colonnes MLflow
+        agg = {
+            "max_pred_score": float(pred_scores_scaled.max()),
+            "min_pred_score": float(pred_scores_scaled.min()),
+            "avg_pred_score": float(pred_scores_scaled.mean()),
+            "final_score_top1": float(top_recos_list[0]["final_score"]),
+            "n_candidates": int(len(candidate_indices)),
+            # infos sur le film source
+            "source_user_rating": float((movies_dict[title].get("user_rating") or 0.0)),
+            "source_movie_rating": float((movies_dict[title].get("rating") or 5.0)),
+        }
+        mlflow.log_metrics(agg)
 
-        # Log batch
-        client.log_batch(run_id=run_id, metrics=metrics_batch, params=mlflow_params, tags=mlflow_tags)
+        # --- Params + tags propres
+        client.log_batch(
+            run_id=run_id,
+            metrics=metrics_batch,
+            params=[
+                Param(key="input_title", value=title),
+                Param(key="top_k", value=str(top_k)),
+                Param(key="n_candidates", value=str(len(candidate_indices))),
+            ],
+            tags=[
+                RunTag(key="stage", value="inference"),
+                RunTag(key="component", value="xgb_recommender"),
+                RunTag(key="source", value="api"),
+            ]
+        )
 
-        # Artifact JSON
+        # --- Artifact CSV propre
+        import csv, tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            path_json = os.path.join(tmp, "top_recommended_titles.json")
-            with open(path_json, "w", encoding="utf-8") as f:
-                json.dump([r["title"] for r in top_recos_list], f, ensure_ascii=False, indent=2)
-            mlflow.log_artifact(path_json)
+            csv_path = os.path.join(tmp, "recommendations.csv")
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(top_recos_list[0].keys()))
+                writer.writeheader()
+                writer.writerows(top_recos_list)
+            mlflow.log_artifact(csv_path)
 
     return top_recos_list
+
 
 
     
@@ -516,6 +536,7 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
