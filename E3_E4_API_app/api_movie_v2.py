@@ -21,7 +21,7 @@ from E3_E4_API_app import config
 import logging
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIkeysHeader
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from mlflow.tracking import MlflowClient
 import time
 import json
@@ -123,7 +123,7 @@ PASSWORD: str = os.getenv("API_PASSWORD")
 API_TOKEN: str = os.getenv("API_TOKEN")
 
 security_basic = HTTPBasic(auto_error=False)
-api_keys_header = APIkeysHeader(name="Authorization", auto_error=False)
+api_keys_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 def verify_credentials(
     credentials: HTTPBasicCredentials = Depends(security_basic),
@@ -511,5 +511,6 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
