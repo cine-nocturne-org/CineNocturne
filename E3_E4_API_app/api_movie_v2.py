@@ -22,6 +22,10 @@ import logging
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
+from mlflow.tracking import MlflowClient
+import time
+import json
+import tempfile
 
 # Configuration du logger (mettre ça en début de fichier)
 logging.basicConfig(
@@ -507,3 +511,4 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
