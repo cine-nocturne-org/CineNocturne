@@ -375,8 +375,11 @@ async def get_unique_genres():
         with engine.connect() as conn:
             result = conn.execute(text(query)).fetchall()
             for row in result:
-                genres = row[0].split(",")
-                all_genres.update([g.strip() for g in genres])
+                if not row[0]: 
+                    continue
+                raw = row[0].replace("|", ",")
+                genres = [g.strip() for g in raw.split(",") if g.strip()]
+                all_genres.update(genres)
         return sorted(all_genres)
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
@@ -522,7 +525,7 @@ async def download_movie_details():
 
         csv_file = io.StringIO()
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow([col for col in result.keyss()])
+        csv_writer.writerow([col for col in result.keys()])
         csv_writer.writerows(rows)
         csv_file.seek(0)
 
@@ -536,6 +539,7 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
