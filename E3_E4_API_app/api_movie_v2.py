@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Query
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.responses import StreamingResponse
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel
@@ -20,8 +21,6 @@ import mlflow
 from E3_E4_API_app import config
 import logging
 from dotenv import load_dotenv
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from mlflow.tracking import MlflowClient
 import time
 import json
@@ -64,11 +63,18 @@ tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
 movie_index_df = pd.read_csv(os.path.join(MODEL_DIR, "movie_index.csv"))
 
 # ------------------------------
-# Chargement des films depuis BDD
+# Chargement des films depuis BDD (on ajoute rating, user_rating)
 # ------------------------------
 with engine.connect() as conn:
     rows = conn.execute(
-        text("SELECT movie_id, title, genres, release_year, synopsis, poster_url FROM movies")
+        text("""
+            SELECT 
+                movie_id, title, genres, release_year,
+                rating, 
+                COALESCE(user_rating, 0.0) AS user_rating,  -- pas encore noté
+                synopsis, poster_url
+            FROM movies
+        """)
     ).mappings().all()
 
 movies = []
@@ -78,17 +84,18 @@ years = []
 
 for r in rows:
     genres_list = r["genres"].split("|") if r["genres"] else []
-    movies.append(dict(r))
+    movies.append(dict(r))                     # ✅ contient maintenant rating & user_rating
     titles.append(r["title"])
     genres_list_all.append(genres_list)
     years.append(r["release_year"] if r["release_year"] else 2000)
 
-# Encodage genres
+# ✅ Encodages CONSERVÉS
 genres_encoded_matrix = mlb.transform(genres_list_all)
 years_scaled = scaler_year.transform(np.array([[y] for y in years]))
 
 # Dict pour accès rapide par titre
 movies_dict = {movie["title"]: movie for movie in movies}
+
 
 # ------------------------------
 # Fonction d'interprétation des scores
@@ -153,38 +160,77 @@ class RatingUpdate(BaseModel):
 # ------------------------------
 @app.post("/update_rating", dependencies=[Depends(verify_credentials)])
 async def update_rating(payload: RatingUpdate):
-    title = payload.title
-    rating = payload.rating
+    title = (payload.title or "").strip()
+    try:
+        rating = float(payload.rating)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="La note doit être un nombre.")
 
-    if rating < 0 or rating > 10:
+    if not (0.0 <= rating <= 10.0):
         raise HTTPException(status_code=400, detail="La note doit être comprise entre 0 et 10.")
 
     try:
         with engine.begin() as conn:
-            # Vérifie si la colonne user_rating existe
+            # 1) Créer la colonne user_rating si elle n'existe pas
             check_col = conn.execute(text("""
-                SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies' AND COLUMN_NAME = 'user_rating'
+                SELECT 1
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'movies'
+                  AND COLUMN_NAME = 'user_rating'
             """)).fetchone()
             if not check_col:
                 conn.execute(text("ALTER TABLE movies ADD COLUMN user_rating FLOAT"))
 
-            # Mise à jour
+            # 2) Mettre à jour la note (match insensible à la casse)
             result = conn.execute(
-                text("UPDATE movies SET user_rating = :rating WHERE title = :title"),
+                text("UPDATE movies SET user_rating = :rating WHERE LOWER(title) = LOWER(:title)"),
                 {"rating": rating, "title": title}
             )
             if result.rowcount == 0:
                 raise HTTPException(status_code=404, detail=f"Film '{title}' non trouvé.")
 
+        # 3) Mettre à jour le cache en mémoire (movies_dict) si présent
+        try:
+            for k in movies_dict.keys():
+                if k.lower() == title.lower():
+                    movies_dict[k]["user_rating"] = float(rating)
+                    break
+        except Exception:
+            # On ne bloque pas la requête si la MAJ du cache échoue
+            pass
+
         return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
 
-    except HTTPException:  # ⚡ On laisse passer le 404
+    except HTTPException:
         raise
     except SQLAlchemyError as e:
+        logger.exception("Erreur SQLAlchemy sur /update_rating")
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
+        logger.exception("Erreur serveur sur /update_rating")
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
+
+
+def get_fresh_ratings(title: str):
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT rating, COALESCE(user_rating, 0.0) AS user_rating
+                FROM movies WHERE LOWER(title)=LOWER(:t)
+            """),
+            {"t": title}
+        ).fetchone()
+    if row:
+        movie_rating = float(row[0]) if row[0] is not None else 5.0
+        user_rating  = float(row[1])  # déjà coalescé
+    else:
+        m = movies_dict.get(title, {})
+        movie_rating = float(m.get("rating") or 5.0)
+        user_rating  = float(m.get("user_rating") or 0.0)
+    return movie_rating, user_rating
+
 
 
 # ------------------------------
@@ -270,6 +316,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "final_score": float(final),
             })
 
+        source_movie_rating, source_user_rating = get_fresh_ratings(title)
+        
         # --- Résumé agrégé pour remplir les colonnes MLflow
         agg = {
             "max_pred_score": float(pred_scores_scaled.max()),
@@ -277,9 +325,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             "avg_pred_score": float(pred_scores_scaled.mean()),
             "final_score_top1": float(top_recos_list[0]["final_score"]),
             "n_candidates": int(len(candidate_indices)),
-            # infos sur le film source
-            "source_user_rating": float((movies_dict[title].get("user_rating") or 0.0)),
-            "source_movie_rating": float((movies_dict[title].get("rating") or 5.0)),
+            "source_user_rating":  float(source_user_rating),  # ✅ frais
+            "source_movie_rating": float(source_movie_rating), # ✅ frais
         }
         mlflow.log_metrics(agg)
 
@@ -460,7 +507,7 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
                 SELECT m.title, m.synopsis, m.poster_url, m.genres, '{platform}' AS platform
                 FROM movies m
                 JOIN {platform} p ON m.title = p.title
-                WHERE FIND_IN_SET(:genre, m.genres)
+                WHERE FIND_IN_SET(:genre, REPLACE(m.genres, '|', ','))
                 """
                 result = conn.execute(text(query), {"genre": genre}).fetchall()
                 for row in result:
@@ -539,6 +586,7 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
