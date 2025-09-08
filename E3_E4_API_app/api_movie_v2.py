@@ -26,6 +26,8 @@ from mlflow.tracking import MlflowClient
 import time
 import json
 import tempfile
+from mlflow.entities import Metric, Param, RunTag
+
 
 # Configuration du logger (mettre ça en début de fichier)
 logging.basicConfig(
@@ -186,11 +188,10 @@ async def update_rating(payload: RatingUpdate):
 
 
 # ------------------------------
-# Route: Recommandation XGB personnalisée (version MLflow propre)
+# Route: Recommandation XGB personnalisée (version MLflow corrigée)
 # ------------------------------
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    # Chercher le film de départ
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
@@ -202,13 +203,15 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         ts = int(time.time() * 1000)
 
         chosen_genres = set(genres_list_all[idx])
-
         vec = tfidf_matrix[idx].reshape(1, -1)
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
         cosine_sim[idx] = -1  # exclure le film lui-même
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
         candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
+
+        if not candidate_indices:
+            return []
 
         features_list = []
         candidate_titles = []
@@ -233,9 +236,6 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             features_list.append(feature_vec)
             candidate_titles.append(titles[i])
 
-        if not features_list:
-            return []
-
         all_features = np.array(features_list)
         pred_scores = xgb_model.predict_proba(all_features)[:, 1]
 
@@ -254,10 +254,11 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             movie_rating = float(movie.get("rating") or 5.0)
             score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
 
+            # Transformation en objets MLflow Metric
             metrics_batch.extend([
-                {"keys": "pred_score", "value": float(pred_scores_scaled[idx_top]), "timestamp": ts, "step": rank},
-                {"keys": "final_score", "value": float(score_final), "timestamp": ts, "step": rank},
-                {"keys": "score_diff", "value": abs(pred_scores_scaled[idx_top] - (user_rating / 10)), "timestamp": ts, "step": rank},
+                Metric(key="pred_score", value=float(pred_scores_scaled[idx_top]), timestamp=ts, step=rank),
+                Metric(key="final_score", value=float(score_final), timestamp=ts, step=rank),
+                Metric(key="score_diff", value=abs(pred_scores_scaled[idx_top] - (user_rating / 10)), timestamp=ts, step=rank),
             ])
 
             top_recos_list.append({
@@ -268,18 +269,21 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "pred_score": float(score_final)
             })
 
-        # Batch log → 1 seul aller-retour vers la DB MLflow
-        client.log_batch(
-            run_id=run_id,
-            metrics=metrics_batch,
-            params=[
-                {"keys": "input_title", "value": title},
-                {"keys": "top_k", "value": str(int(top_k))}
-            ],
-            tags={"stage": "inference", "component": "xgb_recommender", "source": "api"}
-        )
+        # Conversion params et tags en objets MLflow
+        mlflow_params = [
+            Param(key="input_title", value=title),
+            Param(key="top_k", value=str(top_k))
+        ]
+        mlflow_tags = [
+            RunTag(key="stage", value="inference"),
+            RunTag(key="component", value="xgb_recommender"),
+            RunTag(key="source", value="api")
+        ]
 
-        # Artifact : liste des titres recommandés
+        # Log batch
+        client.log_batch(run_id=run_id, metrics=metrics_batch, params=mlflow_params, tags=mlflow_tags)
+
+        # Artifact JSON
         with tempfile.TemporaryDirectory() as tmp:
             path_json = os.path.join(tmp, "top_recommended_titles.json")
             with open(path_json, "w", encoding="utf-8") as f:
@@ -287,6 +291,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             mlflow.log_artifact(path_json)
 
     return top_recos_list
+
 
     
 # ------------------------------
@@ -511,6 +516,7 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 
