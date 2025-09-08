@@ -176,11 +176,12 @@ def main_app():
                 try:
                     # --- MLflow côté Streamlit ---
                     mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
-                    mlflow.set_experiment("louve_movies_monitoring_v2")  # (ou ton nom d'expé)
-                    with mlflow.start_run(run_name=f"streamlit_reco_{chosen_film}", nested=True):
-                        mlflow.set_tags({"source": "streamlit", "stage": "inference_ui"})
+                    mlflow.set_experiment("louve_movies_monitoring")
+                    with mlflow.start_run(run_name=f"ui_reco_{chosen_film}"):
+                        mlflow.set_tags({"source": "streamlit", "stage": "ui"})
                         mlflow.log_param("user", st.session_state.username)
-                        mlflow.log_param("film_input", chosen_film)
+                        
+                    
 
                         # Appel API
                         response = api_get(f"recommend_xgb_personalized/{chosen_film}", params={"top_k": 5})
@@ -361,6 +362,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
