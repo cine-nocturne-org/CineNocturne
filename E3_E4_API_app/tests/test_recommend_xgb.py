@@ -6,7 +6,7 @@ from api_movie_v2 import app
 
 client = TestClient(app)
 
-# Mock des prédictions (2 candidats → 2 proba)
+# Mock des prédictions (1 candidat → 1 proba binaire [neg, pos])
 mock_xgb_pred = np.array([[0.1, 0.9]])
 mock_svd_matrix = np.array([[0.5, 0.5]])
 
@@ -26,25 +26,26 @@ mock_svd_matrix = np.array([[0.5, 0.5]])
 )
 @patch("api_movie_v2.genres_list_all", new=[["Action", "Comédie"], ["Action"]])
 def test_recommend_xgb_valid(mock_xgb, mock_svd, mock_nn):
-    # Mock des méthodes
+    # Mocks
     mock_xgb.predict_proba.return_value = mock_xgb_pred
     mock_svd.transform.return_value = mock_svd_matrix
-    # Ici on simule la distance NN pour 2 films
     mock_nn.kneighbors.return_value = (np.array([[0.0, 0.1]]), None)
 
-    # Appel de l'endpoint
+    # Call
     response = client.get("/recommend_xgb_personalized/Zombieland")
     assert response.status_code == 200
-    data = response.json()
+    payload = response.json()
 
-    # Vérifie que c'est bien une liste non vide
-    assert isinstance(data, list)
-    assert len(data) > 0
+    # ✅ Nouvelle forme de réponse
+    assert isinstance(payload, dict)
+    assert "run_id" in payload and isinstance(payload["run_id"], str)
+    assert "recommendations" in payload and isinstance(payload["recommendations"], list)
+    recos = payload["recommendations"]
+    assert len(recos) > 0
 
     # Vérifie que "AutreFilm" est bien recommandé
-    assert any(rec["title"] == "AutreFilm" for rec in data)
+    assert any(rec["title"] == "AutreFilm" for rec in recos)
 
-# Test d’entrée invalide
 def test_recommend_xgb_invalid():
     response = client.get("/recommend_xgb_personalized/FilmInexistant")
     assert response.status_code == 404
