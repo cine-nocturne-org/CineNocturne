@@ -204,11 +204,11 @@ def main_app():
                                 mlflow.log_metric("pred_score", float(reco.get("pred_score", 0.0)), step=i)
 
                             # Artifact JSON des recos UI
-                            with tempfile.TemporaryDirectory() as tmp:
-                                path_json = os.path.join(tmp, "streamlit_recommendations.json")
-                                with open(path_json, "w", encoding="utf-8") as f:
-                                    json.dump(recos, f, ensure_ascii=False, indent=2)
-                                mlflow.log_artifact(path_json)
+                            # with tempfile.TemporaryDirectory() as tmp:
+                            #     path_json = os.path.join(tmp, "streamlit_recommendations.json")
+                            #     with open(path_json, "w", encoding="utf-8") as f:
+                            #         json.dump(recos, f, ensure_ascii=False, indent=2)
+                            #     mlflow.log_artifact(path_json)
 
                             if recos:
                                 st.success("🎯 Recommandations trouvées !")
@@ -408,6 +408,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
