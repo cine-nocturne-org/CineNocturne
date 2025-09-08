@@ -21,7 +21,7 @@ from E3_E4_API_app import config
 import logging
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIkeysHeader
 from mlflow.tracking import MlflowClient
 import time
 import json
@@ -123,18 +123,18 @@ PASSWORD: str = os.getenv("API_PASSWORD")
 API_TOKEN: str = os.getenv("API_TOKEN")
 
 security_basic = HTTPBasic(auto_error=False)
-api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+api_keys_header = APIkeysHeader(name="Authorization", auto_error=False)
 
 def verify_credentials(
     credentials: HTTPBasicCredentials = Depends(security_basic),
-    api_key: str = Depends(api_key_header)
+    api_keys: str = Depends(api_keys_header)
 ):
     # Mode 1 : Basic Auth
     if credentials and credentials.username == USERNAME and credentials.password == PASSWORD:
         return True
 
     # Mode 2 : Bearer Token
-    if api_key and api_key == f"Bearer {API_TOKEN}":
+    if api_keys and api_keys == f"Bearer {API_TOKEN}":
         return True
 
     raise HTTPException(status_code=401, detail="Non autorisé")
@@ -255,9 +255,9 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             score_final = 0.6 * pred_scores_scaled[idx_top] + 0.25 * (user_rating / 10) + 0.15 * (movie_rating / 10)
 
             metrics_batch.extend([
-                {"key": "pred_score", "value": float(pred_scores_scaled[idx_top]), "timestamp": ts, "step": rank},
-                {"key": "final_score", "value": float(score_final), "timestamp": ts, "step": rank},
-                {"key": "score_diff", "value": abs(pred_scores_scaled[idx_top] - (user_rating / 10)), "timestamp": ts, "step": rank},
+                {"keys": "pred_score", "value": float(pred_scores_scaled[idx_top]), "timestamp": ts, "step": rank},
+                {"keys": "final_score", "value": float(score_final), "timestamp": ts, "step": rank},
+                {"keys": "score_diff", "value": abs(pred_scores_scaled[idx_top] - (user_rating / 10)), "timestamp": ts, "step": rank},
             ])
 
             top_recos_list.append({
@@ -273,8 +273,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             run_id=run_id,
             metrics=metrics_batch,
             params=[
-                {"key": "input_title", "value": title},
-                {"key": "top_k", "value": str(int(top_k))}
+                {"keys": "input_title", "value": title},
+                {"keys": "top_k", "value": str(int(top_k))}
             ],
             tags={"stage": "inference", "component": "xgb_recommender", "source": "api"}
         )
@@ -497,7 +497,7 @@ async def download_movie_details():
 
         csv_file = io.StringIO()
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow([col for col in result.keys()])
+        csv_writer.writerow([col for col in result.keyss()])
         csv_writer.writerows(rows)
         csv_file.seek(0)
 
@@ -511,4 +511,5 @@ async def download_movie_details():
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
