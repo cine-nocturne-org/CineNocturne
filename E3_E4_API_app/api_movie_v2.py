@@ -34,6 +34,8 @@ import re
 # (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
 from E3_E4_API_app import config
 
+STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
+
 # ======================
 # 🔧 Logging
 # ======================
@@ -151,14 +153,26 @@ genres_list_all = []
 years = []
 
 for r in rows:
-    genres_list = r["genres"].split("|") if r["genres"] else []
+    raw = r["genres"] or ""
+    parts = []
+    for token in raw.split("|"):
+        parts.extend([g.strip() for g in token.split(",") if g.strip()])
+    genres_list = parts
     movies.append(dict(r))
     titles.append(r["title"])
     genres_list_all.append(genres_list)
     years.append(r["release_year"] if r["release_year"] else 2000)
 
+def safe_mlb_transform(mlb, genre_lists):
+    try:
+        return mlb.transform(genre_lists)
+    except ValueError:
+        known = set(mlb.classes_)
+        cleaned = [[g for g in gs if g in known] for gs in genre_lists]
+        return mlb.transform(cleaned)
+
 # Encodage genres & années
-genres_encoded_matrix = mlb.transform(genres_list_all)
+genres_encoded_matrix = safe_mlb_transform(mlb, genres_list_all)
 years_scaled = scaler_year.transform(np.array([[y] for y in years]))
 
 # Accès rapide par titre (sensible à la casse telle que BDD)
@@ -273,10 +287,10 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     with mlflow_start_inference_run(input_title=title, top_k=top_k) as run:
         try:
             info = getattr(run, "info", None)
-            rid = getattr(info, "run_id", None) if info is not None else None
-            if rid is None:
+            rid = (info.get("run_id") if isinstance(info, dict) else getattr(info, "run_id", None))
+            if not rid:
                 rid = getattr(run, "run_id", "")
-            run_id = str(rid)
+            run_id = str(rid or "")
         except Exception:
             run_id = ""
 
@@ -312,8 +326,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         # 5) Features pour XGB
         features_list, candidate_titles = [], []
         for i in candidate_indices:
-            svd_vec = svd_full.transform(tfidf_matrix[i])
-            nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i])
+            svd_vec = svd_full.transform(tfidf_matrix[i].reshape(1, -1))
+            nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i].reshape(1, -1))
             sims = 1 - nn_distances[0][1:] if nn_distances.shape[1] > 1 else np.array([0.0])
 
             feature_vec = np.hstack([
@@ -450,7 +464,7 @@ async def log_feedback(payload: FeedbackPayload):
 @app.get("/fuzzy_match/{title}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def fuzzy_match(
     title: str,
-    limit_sql: int = 400,   # plus de candidats = meilleur rappel
+    limit_sql: int = 400, 
     top_k: int = 10,
     score_cutoff: int = 60
 ):
@@ -459,8 +473,10 @@ async def fuzzy_match(
         raise HTTPException(status_code=400, detail="Titre vide.")
 
     # Normalisation & tokens
-    q_norm = normalize_text(q)                       # ta fonction existante
-    tokens = [t for t in re.split(r"\s+", q_norm) if t]
+    q_norm = normalize_text(q).replace("&", " and ")   
+    tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm) if t and t not in STOPWORDS]
+    if not tokens:
+        tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm)]
 
     # Requêtes très courtes => augmente le rappel
     if len(tokens) == 1:
@@ -877,6 +893,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
