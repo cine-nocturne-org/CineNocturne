@@ -539,12 +539,53 @@ def main_app():
             }, index=["Réel 👍", "Réel 👎"]))
     
             # --- Genres préférés (bar chart)
-            st.markdown("### 🎭 Genres les plus likés")
-            if stats["top_genres"]:
-                df_g = pd.DataFrame(stats["top_genres"]).set_index("genre")
-                st.bar_chart(df_g["likes"])
+            st.markdown("### 🎭 Genres préférés (selon mes notes > 5)")
+            THRESH = 5.0
+            
+            r = api_get(f"user_ratings/{user}", params={"limit": 5000})
+            if r.status_code != 200:
+                try:
+                    msg = r.json().get("detail", "Impossible de récupérer l'historique des notes.")
+                except Exception:
+                    msg = f"Erreur {r.status_code} — {r.text[:300]}"
+                st.warning(msg)
             else:
-                st.info("Aucun genre favori détecté pour l’instant.")
+                ratings = r.json().get("ratings", [])
+                if not ratings:
+                    st.info("Tu n'as pas encore noté de films.")
+                else:
+                    df_r = pd.DataFrame(ratings)
+            
+                    # Garder la DERNIÈRE note par film (l’API historise les notes)
+                    if "ts" in df_r:
+                        df_r = df_r.sort_values("ts")
+                    df_last = df_r.groupby("title", as_index=False).tail(1).copy()
+            
+                    # Nettoyage + filtre > 5
+                    df_last["rating"] = pd.to_numeric(df_last["rating"], errors="coerce")
+                    df_last = df_last[df_last["rating"] > THRESH]
+            
+                    # Parse genres -> liste puis explode
+                    df_last["genres_list"] = df_last["genres"].apply(parse_genres)
+                    expl = df_last.explode("genres_list").dropna(subset=["genres_list"])
+            
+                    if expl.empty:
+                        st.info("Aucun genre favori détecté (notes > 5) pour l’instant.")
+                    else:
+                        # Compter le NOMBRE DE FILMS par genre (dernière note > 5)
+                        # (un film multi-genres compte pour chacun de ses genres)
+                        counts = expl.groupby("genres_list")["title"].nunique().sort_values(ascending=False)
+            
+                        # Bar chart
+                        st.bar_chart(counts)
+            
+                        # Top 5 en texte
+                        top5 = counts.head(5)
+                        st.caption(
+                            "Top genres (par nombre de films notés > 5) : " +
+                            ", ".join(f"{g} ({n})" for g, n in top5.items())
+                        )
+
     
             # --- Likes par année (line chart)
             st.markdown("### 📅 Likes par année de sortie")
@@ -630,6 +671,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
