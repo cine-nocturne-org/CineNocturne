@@ -217,26 +217,38 @@ def main_app():
                     "movie_id": movie_id
                 })
 
-            st.markdown("### Sélectionnez le film correct :")
-            rows, cols_per_row = 2, 5
+            st.markdown("<div style='border:1px solid #eee;border-radius:12px;padding:8px'>", unsafe_allow_html=True)
+            st.markdown("### Sélectionnez le film correct :")           
+            cols_per_row = 5
+            rows = math.ceil(len(matches_info) / cols_per_row)
+            
             for row in range(rows):
                 row_matches = matches_info[row*cols_per_row : (row+1)*cols_per_row]
                 if not row_matches:
                     continue
-                cols = st.columns(len(row_matches))
-                for col_idx, match in enumerate(row_matches):
-                    with cols[col_idx]:
+            
+                # Toujours 5 colonnes -> l’UI ne s’étire plus quand il n’y a qu’un seul résultat
+                cols = st.columns(cols_per_row, gap="small")
+            
+                # Centre la rangée : calcule l’offset à gauche
+                offset = (cols_per_row - len(row_matches)) // 2
+            
+                for i, match in enumerate(row_matches):
+                    target_col = cols[offset + i]
+                    with target_col:
                         if match.get("poster"):
                             st.image(match["poster"], use_container_width=True)
                         st.caption(match.get("title", "Titre inconnu"))
-                        unique_key = f"select_{match['movie_id']}_{row}_{col_idx}"
+            
+                        unique_key = f"select_{match['movie_id']}_{row}_{i}"
                         if st.session_state.get("chosen_film") == match["title"]:
-                            st.button("✅ Sélectionné", key=unique_key, disabled=True)
+                            st.button("✅ Sélectionné", key=unique_key, disabled=True, use_container_width=True)
                         else:
-                            if st.button("Sélectionner", key=unique_key):
-                                # garde la recherche mais réinitialise l’état des recos
+                            if st.button("Sélectionner", key=unique_key, use_container_width=True):
                                 reset_only_reco()
                                 st.session_state["chosen_film"] = match["title"]
+            st.markdown("</div>", unsafe_allow_html=True)
+
 
         # === Notation du film sélectionné ===
         chosen_film = st.session_state.get("chosen_film")
@@ -671,6 +683,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
