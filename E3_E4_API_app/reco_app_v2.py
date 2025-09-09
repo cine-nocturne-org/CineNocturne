@@ -8,7 +8,6 @@ import sys
 import tempfile
 import json
 
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "E3_E4_API_app"))
 import config
 
@@ -104,7 +103,7 @@ def reset_reco(full=False):
     if full:
         st.session_state["chosen_film"] = None
         st.session_state["fuzzy_matches_1"] = None
-        st.session_state["film_input"] = ""
+        # ⚠️ NE PAS toucher à st.session_state["film_input"] ici (sinon StreamlitAPIException)
 
 def page_from_pool():
     pool = st.session_state.get("reco_pool", [])
@@ -122,6 +121,16 @@ def parse_genres(raw):
     if not raw:
         return []
     return [g.strip() for g in str(raw).replace("|", ",").split(",") if g.strip()]
+
+# --- Callbacks sûrs pour modifier film_input ---
+def reset_search_all():
+    """Réinitialise tout + vide le champ de recherche (autorisé via callback)."""
+    reset_reco(full=True)
+    st.session_state["film_input"] = ""
+
+def reset_only_reco():
+    """Réinitialise uniquement la pagination/des recos (garde la recherche)."""
+    reset_reco(full=False)
 
 
 # -----------------------------
@@ -151,12 +160,13 @@ def main_app():
     with tab1:
         st.subheader("✨ Noter un film que vous avez vu")
 
-        # === Taille de page (AJOUT 1) ===
+        # === Taille de page ===
         st.select_slider(
             "Films par page",
             options=[3, 5, 8, 10],
             value=st.session_state.get("page_size", 5),
-            key="page_size"
+            key="page_size",
+            help="Nombre de recommandations affichées à la fois."
         )
 
         # === Recherche ===
@@ -169,7 +179,6 @@ def main_app():
                 st.session_state["chosen_film"] = None
                 if film_input:
                     try:
-                        # Spinner (AJOUT 2)
                         with st.spinner("🔎 Recherche des correspondances…"):
                             response = api_get(f"fuzzy_match/{film_input}")
                         if response.status_code == 200:
@@ -182,9 +191,7 @@ def main_app():
                     except requests.exceptions.RequestException:
                         st.error("❌ Erreur de connexion avec le serveur")
         with c_reset_search:
-            if st.button("🧹 Réinitialiser la recherche", key="btn_reset_search"):
-                reset_reco(full=True)
-                st.rerun()
+            st.button("🧹 Réinitialiser la recherche", key="btn_reset_search", on_click=reset_search_all)
 
         # === Sélection du film ===
         if st.session_state.get("fuzzy_matches_1"):
@@ -224,8 +231,8 @@ def main_app():
                             st.button("✅ Sélectionné", key=unique_key, disabled=True)
                         else:
                             if st.button("Sélectionner", key=unique_key):
-                                # on garde la recherche mais on réinitialise l'état reco
-                                reset_reco(full=False)
+                                # garde la recherche mais réinitialise l’état des recos
+                                reset_only_reco()
                                 st.session_state["chosen_film"] = match["title"]
 
         # === Notation du film sélectionné ===
@@ -256,7 +263,6 @@ def main_app():
                         mlflow.log_param("user", st.session_state.username)
                         mlflow.log_param("film_input", chosen_film)
 
-                        # Spinner (AJOUT 2)
                         with st.spinner("🧠 Calcul des recommandations…"):
                             # Appel API : on demande large puis on pagine côté UI
                             response = api_get(
@@ -370,9 +376,7 @@ def main_app():
                             st.info("Plus de recommandations disponibles.")
 
                 with c_reset:
-                    if st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco"):
-                        reset_reco(full=True)
-                        st.rerun()
+                    st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
 
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
