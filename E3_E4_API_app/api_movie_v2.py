@@ -627,3 +627,96 @@ async def download_movie_details():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
+
+# -- Stats utilisateur : historique likes/dislikes, genres préférés, accuracy, etc.
+@app.get("/user_stats/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
+async def user_stats(user_name: str, limit_recent: int = 50):
+    try:
+        query = """
+        SELECT f.ts, f.input_title, f.reco_title, f.pred_label, f.pred_score, f.liked,
+               m.genres, m.release_year
+        FROM feedback f
+        LEFT JOIN movies m ON m.title = f.reco_title
+        WHERE f.user_name = :u
+        ORDER BY f.ts DESC
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text(query), {"u": user_name}).fetchall()
+
+        # Si aucun historique pour cet utilisateur, renvoyer un squelette vide
+        if not rows:
+            return {
+                "user": user_name,
+                "total": 0,
+                "likes": 0,
+                "dislikes": 0,
+                "like_rate": 0.0,
+                "accuracy": 0.0,
+                "confusion": {"tp": 0, "tn": 0, "fp": 0, "fn": 0},
+                "top_genres": [],
+                "by_year": [],
+                "recent": []
+            }
+
+        cols = ["ts","input_title","reco_title","pred_label","pred_score","liked","genres","release_year"]
+        df = pd.DataFrame(rows, columns=cols)
+        df["liked"] = df["liked"].astype(int)
+        df["pred_label"] = df["pred_label"].astype(int)
+
+        n = len(df)
+        likes = int((df["liked"] == 1).sum())
+        dislikes = int((df["liked"] == 0).sum())
+        like_rate = float(likes / n) if n else 0.0
+        accuracy = float((df["pred_label"] == df["liked"]).mean()) if n else 0.0
+
+        tp = int(((df["pred_label"] == 1) & (df["liked"] == 1)).sum())
+        tn = int(((df["pred_label"] == 0) & (df["liked"] == 0)).sum())
+        fp = int(((df["pred_label"] == 1) & (df["liked"] == 0)).sum())
+        fn = int(((df["pred_label"] == 0) & (df["liked"] == 1)).sum())
+
+        # Genres préférés (sum des likes par genre)
+        def split_genres(s):
+            if not s:
+                return []
+            parts = []
+            for token in str(s).split("|"):
+                parts.extend([g.strip() for g in token.split(",")])
+            return [g for g in parts if g]
+
+        df["genres_list"] = df["genres"].apply(split_genres)
+        expl = df.explode("genres_list")
+        if not expl.empty:
+            likes_by_genre = expl.groupby("genres_list")["liked"].sum().sort_values(ascending=False)
+            top_genres = [{"genre": k, "likes": int(v)} for k, v in likes_by_genre.head(10).items()]
+        else:
+            top_genres = []
+
+        # Likes par année de sortie
+        by_year = df.groupby("release_year")["liked"].sum().sort_index().reset_index()
+        by_year = [
+            {"year": int(y) if pd.notna(y) else None, "likes": int(v)}
+            for y, v in zip(by_year["release_year"], by_year["liked"])
+        ]
+
+        # Récents
+        df_recent = df[["ts","reco_title","pred_score","pred_label","liked","genres","release_year"]].head(limit_recent).copy()
+        df_recent["ts"] = df_recent["ts"].astype(str)
+        recent = df_recent.to_dict(orient="records")
+
+        return {
+            "user": user_name,
+            "total": n,
+            "likes": likes,
+            "dislikes": dislikes,
+            "like_rate": like_rate,
+            "accuracy": accuracy,
+            "confusion": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
+            "top_genres": top_genres,
+            "by_year": by_year,
+            "recent": recent
+        }
+
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
