@@ -84,6 +84,22 @@ with engine.begin() as conn:
         )
     """))
 
+    # FULLTEXT index pour accélérer /fuzzy_match
+with engine.begin() as conn:
+    try:
+        has_idx = conn.execute(text("""
+            SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'movies'
+              AND INDEX_NAME = 'idx_movies_title_fulltext'
+        """)).scalar()
+        if not has_idx:
+            conn.execute(text("CREATE FULLTEXT INDEX idx_movies_title_fulltext ON movies(title)"))
+    except SQLAlchemyError:
+        # Pas bloquant : on laissera le fallback LIKE fonctionner
+        pass
+
+
 # ======================
 # 🔒 Auth (Basic ou Bearer)
 # ======================
@@ -118,10 +134,8 @@ xgb_model = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
 mlb = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
 scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
 nn_full = joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"))
-reco_vectorizer = joblib.load(os.path.join(MODEL_DIR, "reco_vectorizer.joblib"))
 svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
 tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
-movie_index_df = pd.read_csv(os.path.join(MODEL_DIR, "movie_index.csv"))
 
 # Films depuis BDD (mémoire)
 with engine.connect() as conn:
@@ -426,45 +440,71 @@ async def log_feedback(payload: FeedbackPayload):
 
 # -- Fuzzy match titres
 @app.get("/fuzzy_match/{title}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
-async def fuzzy_match(title: str):
-    title_input = normalize_text(title.strip())
-    choices = [(normalize_text(c), c) for c in movie_index_df["title"].tolist()]
-    movies_dict_normalized = {normalize_text(k): v for k, v in movies_dict.items()}
+async def fuzzy_match(
+    title: str,
+    limit_sql: int = 300,     # nb max de candidats récupérés via SQL avant RapidFuzz
+    top_k: int = 10,          # nb de résultats retournés
+    score_cutoff: int = 60    # score mini RapidFuzz
+):
+    q = title.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Titre vide.")
 
+    # 1) Récupérer des candidats depuis la BDD
+    with engine.connect() as conn:
+        rows = []
+        # Essai FULLTEXT si l'index existe
+        try:
+            rows = conn.execute(text("""
+                SELECT movie_id, title
+                FROM movies
+                WHERE MATCH(title) AGAINST(:q IN NATURAL LANGUAGE MODE)
+                LIMIT :lim
+            """), {"q": q, "lim": int(limit_sql)}).fetchall()
+        except SQLAlchemyError:
+            rows = []
+
+        # Fallback LIKE si FULLTEXT impossible / pas de résultat
+        if not rows:
+            rows = conn.execute(text("""
+                SELECT movie_id, title
+                FROM movies
+                WHERE title LIKE :like
+                LIMIT :lim
+            """), {"like": f"%{q}%", "lim": int(limit_sql)}).fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Aucune correspondance trouvée.")
+
+    candidates = [r[1] for r in rows]                 # titres
+    id_by_title = {r[1]: r[0] for r in rows}          # map titre -> movie_id
+
+    # 2) Fuzzy sur les candidats
     matches = process.extract(
-        query=title_input,
-        choices=[c[0] for c in choices],
+        query=q,
+        choices=candidates,
         scorer=fuzz.WRatio,
-        limit=20,
-        score_cutoff=70
+        limit=int(top_k),
+        score_cutoff=int(score_cutoff)
     )
 
     if not matches:
-        raise HTTPException(status_code=404, detail="Aucune correspondance ≥70% trouvée.")
-
-    seen_titles = set()
-    filtered = []
-
-    for match in matches:
-        norm_title, score, idx = match
-        original_title = choices[idx][1]
-        if original_title in seen_titles:
-            continue
-        partial = fuzz.partial_ratio(title_input, norm_title)
-        if partial >= 60:
-            seen_titles.add(original_title)
-            filtered.append({
-                "title": original_title,
-                "score": round(score),
-                "movie_id": movies_dict_normalized.get(norm_title, {}).get("movie_id")
-            })
-        if len(filtered) >= 10:
-            break
-
-    if not filtered:
         raise HTTPException(status_code=404, detail="Aucune correspondance fiable trouvée.")
 
-    return {"matches": filtered}
+    # 3) Retour formaté
+    out = []
+    seen = set()
+    for title_match, score, _ in matches:
+        if title_match in seen:
+            continue
+        seen.add(title_match)
+        out.append({
+            "title": title_match,
+            "score": int(score),
+            "movie_id": id_by_title.get(title_match)
+        })
+
+    return {"matches": out}
 
 
 # -- Genres uniques (sur la BDD)
@@ -763,5 +803,6 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
