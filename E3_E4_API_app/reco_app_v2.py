@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 import requests
 import traceback
@@ -148,11 +149,13 @@ def main_app():
             logout()
 
     # Onglets
-    tab1, tab2, tab3 = st.tabs([
-        "✨​ Recommandations perso",
-        "🎲 Suggestions aléatoires",
-        "📺​ Plateformes disponibles"
+    tab1, tab2, tab3, tab4 = st.tabs([
+    "✨​ Recommandations perso",
+    "🎲 Suggestions aléatoires",
+    "📺​ Plateformes disponibles",
+    "📈 Mon tableau de bord"
     ])
+
 
     # ------------------------------
     # Onglet 1 : Film vu + reco perso
@@ -487,6 +490,80 @@ def main_app():
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
 
+    
+    # ------------------------------
+    # Onglet 4 : Dashboard perso
+    # ------------------------------
+    with tab4:
+        st.subheader("📈 Mon tableau de bord")
+        user = st.session_state.get("username")
+        if not user:
+            st.info("Connecte-toi pour voir ton tableau de bord.")
+        else:
+            with st.spinner("Chargement de tes statistiques…"):
+                resp = api_get(f"user_stats/{user}")
+            if resp.status_code != 200:
+                st.error(resp.json().get("detail", "Impossible de récupérer les statistiques."))
+            else:
+                stats = resp.json()
+    
+                # KPIs
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("👍 Likes", f"{stats['likes']}")
+                c2.metric("👎 Dislikes", f"{stats['dislikes']}")
+                c3.metric("Taux de like", f"{stats['like_rate']*100:.0f}%")
+                c4.metric("Accuracy modèle", f"{stats['accuracy']*100:.0f}%")
+    
+                # Confusion matrix light
+                conf = stats["confusion"]
+                st.caption("Confusion (sur les recos où tu as donné un avis)")
+                st.table(pd.DataFrame({
+                    "Prédit 👍": [conf["tp"], conf["fp"]],
+                    "Prédit 👎": [conf["fn"], conf["tn"]],
+                }, index=["Réel 👍", "Réel 👎"]))
+    
+                # Genres préférés (bar chart)
+                st.markdown("### 🎭 Genres les plus likés")
+                if stats["top_genres"]:
+                    df_g = pd.DataFrame(stats["top_genres"])
+                    df_g = df_g.set_index("genre")
+                    st.bar_chart(df_g["likes"])
+                else:
+                    st.info("Aucun genre favori détecté pour l’instant.")
+    
+                # Likes par année (line chart)
+                st.markdown("### 📅 Likes par année de sortie")
+                if stats["by_year"]:
+                    df_y = pd.DataFrame(stats["by_year"])
+                    df_y = df_y.sort_values("year")
+                    df_y = df_y.set_index("year")
+                    st.line_chart(df_y["likes"])
+                else:
+                    st.info("Aucune donnée par année pour l’instant.")
+    
+                # Historique récent
+                st.markdown("### 🕒 Derniers avis")
+                recent = pd.DataFrame(stats["recent"])
+                if not recent.empty:
+                    recent_display = recent.copy()
+                    recent_display["avis"] = recent_display["liked"].map({1: "👍", 0: "👎"})
+                    recent_display = recent_display[["ts","reco_title","avis","pred_score","genres","release_year"]]
+                    recent_display.rename(columns={
+                        "ts": "horodatage",
+                        "reco_title": "film",
+                        "pred_score": "score_modèle",
+                        "genres": "genres",
+                        "release_year": "année"
+                    }, inplace=True)
+                    st.dataframe(recent_display, use_container_width=True, hide_index=True)
+    
+                    # Export CSV
+                    csv = recent_display.to_csv(index=False).encode("utf-8")
+                    st.download_button("📥 Exporter l'historique (CSV)", csv, file_name="historique_feedback.csv", mime="text/csv")
+                else:
+                    st.info("Pas encore d’historique. Like ou dislike quelques recos pour alimenter le dashboard !")
+
+
 # -----------------------------
 # Point d'entrée principal
 # -----------------------------
@@ -509,3 +586,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
