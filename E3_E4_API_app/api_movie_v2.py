@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import pandas as pd
 import numpy as np
 import joblib
@@ -58,7 +58,7 @@ mlflow.set_experiment("louve_movies_monitoring")
 DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
 engine = create_engine(DATABASE_URL)
 
-# Crée la table de feedback si absente
+# Crée les tables si absentes
 with engine.begin() as conn:
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS feedback (
@@ -71,6 +71,16 @@ with engine.begin() as conn:
             pred_score FLOAT,
             liked TINYINT,
             run_id VARCHAR(64)
+        )
+    """))
+    # NEW: historique des notes utilisateurs
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_ratings (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_name VARCHAR(255),
+            title VARCHAR(512),
+            rating FLOAT
         )
     """))
 
@@ -161,6 +171,7 @@ def mlflow_start_inference_run(input_title: str, top_k: int):
 class RatingUpdate(BaseModel):
     title: str
     rating: float
+    user_name: Optional[str] = None  # NEW: identifiant de l'utilisateur qui note
 
 class FeedbackPayload(BaseModel):
     run_id: str
@@ -175,11 +186,12 @@ class FeedbackPayload(BaseModel):
 # 🔧 Endpoints
 # ======================
 
-# -- Mettre à jour la note utilisateur d’un film
+# -- Mettre à jour la note utilisateur d’un film (+ historisation)
 @app.post("/update_rating", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def update_rating(payload: RatingUpdate):
     title = payload.title
     rating = payload.rating
+    user_name = payload.user_name or "anonymous"
 
     if rating < 0 or rating > 10:
         raise HTTPException(status_code=400, detail="La note doit être comprise entre 0 et 10.")
@@ -200,6 +212,15 @@ async def update_rating(payload: RatingUpdate):
             )
             if result.rowcount == 0:
                 raise HTTPException(status_code=404, detail=f"Film '{title}' non trouvé.")
+
+            # NEW: historiser la note dans user_ratings
+            conn.execute(
+                text("""
+                    INSERT INTO user_ratings (user_name, title, rating)
+                    VALUES (:u, :t, :r)
+                """),
+                {"u": user_name, "t": title, "r": float(rating)}
+            )
 
         return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
 
@@ -355,7 +376,6 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         return {"run_id": run_id, "recommendations": recos}
 
 
-
 # -- Enregistrer le feedback utilisateur (like/dislike) + accuracy online
 @app.post("/log_feedback", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def log_feedback(payload: FeedbackPayload):
@@ -397,7 +417,6 @@ async def log_feedback(payload: FeedbackPayload):
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
 
 
 # -- Fuzzy match titres
@@ -716,6 +735,27 @@ async def user_stats(user_name: str, limit_recent: int = 50):
             "recent": recent
         }
 
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
+
+# -- NEW: Historique des notes utilisateur (films notés via /update_rating)
+@app.get("/user_ratings/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
+async def get_user_ratings(user_name: str, limit: int = 200):
+    try:
+        query = """
+        SELECT ur.ts, ur.title, ur.rating, m.genres, m.release_year
+        FROM user_ratings ur
+        LEFT JOIN movies m ON m.title = ur.title
+        WHERE ur.user_name = :u
+        ORDER BY ur.ts DESC
+        LIMIT :lim
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text(query), {"u": user_name, "lim": int(limit)}).mappings().all()
+        return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
