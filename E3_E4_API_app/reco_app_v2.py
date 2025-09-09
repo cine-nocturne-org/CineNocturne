@@ -219,37 +219,43 @@ def main_app():
                     "movie_id": movie_id
                 })
 
-            st.markdown("<div style='border:1px solid #eee;border-radius:12px;padding:8px'>", unsafe_allow_html=True)
-            st.markdown("### Sélectionnez le film correct :")           
+            st.markdown("### Sélectionnez le film correct :")
             cols_per_row = 5
             rows = math.ceil(len(matches_info) / cols_per_row)
+            
+            # CSS une seule fois (petite carte propre)
+            st.markdown("""
+            <style>
+            .card { border:1px solid #eee; border-radius:12px; padding:8px; height:100%; }
+            </style>
+            """, unsafe_allow_html=True)
             
             for row in range(rows):
                 row_matches = matches_info[row*cols_per_row : (row+1)*cols_per_row]
                 if not row_matches:
                     continue
             
-                # Toujours 5 colonnes -> l’UI ne s’étire plus quand il n’y a qu’un seul résultat
                 cols = st.columns(cols_per_row, gap="small")
             
-                # Centre la rangée : calcule l’offset à gauche
+                # Centre la rangée si < 5 items
                 offset = (cols_per_row - len(row_matches)) // 2
             
                 for i, match in enumerate(row_matches):
-                    target_col = cols[offset + i]
-                    with target_col:
+                    with cols[offset + i]:
+                        st.markdown("<div class='card'>", unsafe_allow_html=True)
+            
                         if match.get("poster"):
                             st.image(match["poster"], use_container_width=True)
                         st.caption(match.get("title", "Titre inconnu"))
             
-                        unique_key = f"select_{match['movie_id']}_{row}_{i}"
-                        if st.session_state.get("chosen_film") == match["title"]:
-                            st.button("✅ Sélectionné", key=unique_key, disabled=True, use_container_width=True)
-                        else:
-                            if st.button("Sélectionner", key=unique_key, use_container_width=True):
-                                reset_only_reco()
-                                st.session_state["chosen_film"] = match["title"]
-            st.markdown("</div>", unsafe_allow_html=True)
+                        key = f"select_{match.get('movie_id','na')}_{row}_{i}"
+                        is_selected = (st.session_state.get("chosen_film") == match.get("title"))
+                        label = "✅ Sélectionné" if is_selected else "Sélectionner"
+                        if st.button(label, key=key, use_container_width=True, disabled=is_selected):
+                            reset_only_reco()
+                            st.session_state["chosen_film"] = match.get("title")
+            
+                        st.markdown("</div>", unsafe_allow_html=True)
 
 
         # === Notation du film sélectionné ===
@@ -685,6 +691,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
