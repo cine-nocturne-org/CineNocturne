@@ -27,6 +27,8 @@ from dotenv import load_dotenv
 import logging
 import tempfile
 import json
+import re
+
 
 # -------- Config locale du projet --------
 # (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
@@ -448,69 +450,135 @@ async def log_feedback(payload: FeedbackPayload):
 @app.get("/fuzzy_match/{title}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def fuzzy_match(
     title: str,
-    limit_sql: int = 300,     # nb max de candidats récupérés via SQL avant RapidFuzz
-    top_k: int = 10,          # nb de résultats retournés
-    score_cutoff: int = 60    # score mini RapidFuzz
+    limit_sql: int = 400,   # plus de candidats = meilleur rappel
+    top_k: int = 10,
+    score_cutoff: int = 60
 ):
     q = title.strip()
     if not q:
         raise HTTPException(status_code=400, detail="Titre vide.")
 
-    # 1) Récupérer des candidats depuis la BDD
+    # Normalisation & tokens
+    q_norm = normalize_text(q)                       # ta fonction existante
+    tokens = [t for t in re.split(r"\s+", q_norm) if t]
+
+    # Requêtes très courtes => augmente le rappel
+    if len(tokens) == 1:
+        limit_sql = max(limit_sql, 800)
+        score_cutoff = min(score_cutoff, 50)
+
+    # FULLTEXT en BOOLEAN MODE avec préfixes (+tok*)
+    bool_query = " ".join(f"+{t}*" for t in tokens if len(t) >= 2)
+
     with engine.connect() as conn:
         rows = []
-        # Essai FULLTEXT si l'index existe
-        try:
-            rows = conn.execute(text("""
-                SELECT movie_id, title
-                FROM movies
-                WHERE MATCH(title) AGAINST(:q IN NATURAL LANGUAGE MODE)
-                LIMIT :lim
-            """), {"q": q, "lim": int(limit_sql)}).fetchall()
-        except SQLAlchemyError:
-            rows = []
 
-        # Fallback LIKE si FULLTEXT impossible / pas de résultat
+        # 1) FULLTEXT BOOLEAN MODE
+        if bool_query:
+            try:
+                rows = conn.execute(text("""
+                    SELECT movie_id, title
+                    FROM movies
+                    WHERE MATCH(title) AGAINST(:bq IN BOOLEAN MODE)
+                    LIMIT :lim
+                """), {"bq": bool_query, "lim": int(limit_sql)}).fetchall()
+            except SQLAlchemyError:
+                rows = []
+
+        # 2) FULLTEXT NATURAL LANGUAGE (fallback)
         if not rows:
-            rows = conn.execute(text("""
-                SELECT movie_id, title
-                FROM movies
-                WHERE title LIKE :like
-                LIMIT :lim
-            """), {"like": f"%{q}%", "lim": int(limit_sql)}).fetchall()
+            try:
+                rows = conn.execute(text("""
+                    SELECT movie_id, title
+                    FROM movies
+                    WHERE MATCH(title) AGAINST(:q IN NATURAL LANGUAGE MODE)
+                    LIMIT :lim
+                """), {"q": q, "lim": int(limit_sql)}).fetchall()
+            except SQLAlchemyError:
+                rows = []
+
+        # 3) LIKE "normalisé" (retire espaces/ponctuation, & -> and)
+        if not rows:
+            norm_q = re.sub(r"[^a-z0-9]+", "", q_norm)
+            try:
+                rows = conn.execute(text("""
+                    SELECT movie_id, title
+                    FROM movies
+                    WHERE
+                        REPLACE(
+                        REPLACE(
+                        REPLACE(
+                        REPLACE(
+                        REPLACE(
+                        REPLACE(
+                        REPLACE(
+                            LOWER(title),
+                        ' ', ''), '-', ''), '''', ''), ':', ''), '.', ''), ',', ''), '&', 'and'
+                        ) LIKE :norm_like
+                    LIMIT :lim
+                """), {"norm_like": f"%{norm_q}%", "lim": int(limit_sql)}).fetchall()
+            except SQLAlchemyError:
+                rows = []
+
+        # 4) LIKE souple avec jokers entre tokens: %hung%games%songbirds%
+        if not rows and tokens:
+            like_chain = "%" + "%".join(tokens) + "%"
+            try:
+                rows = conn.execute(text("""
+                    SELECT movie_id, title
+                    FROM movies
+                    WHERE LOWER(title) LIKE :like_chain
+                    LIMIT :lim
+                """), {"like_chain": like_chain, "lim": int(limit_sql)}).fetchall()
+            except SQLAlchemyError:
+                rows = []
 
     if not rows:
         raise HTTPException(status_code=404, detail="Aucune correspondance trouvée.")
 
-    candidates = [r[1] for r in rows]                 # titres
-    id_by_title = {r[1]: r[0] for r in rows}          # map titre -> movie_id
+    candidates = [r[1] for r in rows]
+    id_by_title = {r[1]: r[0] for r in rows}
 
-    # 2) Fuzzy sur les candidats
+    # Rerank avec RapidFuzz
     matches = process.extract(
         query=q,
         choices=candidates,
         scorer=fuzz.WRatio,
-        limit=int(top_k),
+        limit=top_k * 3,
         score_cutoff=int(score_cutoff)
     )
 
-    if not matches:
-        raise HTTPException(status_code=404, detail="Aucune correspondance fiable trouvée.")
+    # Si peu de résultats, on complète via partial_ratio (plus permissif)
+    if len(matches) < top_k:
+        extra = process.extract(
+            query=q,
+            choices=candidates,
+            scorer=fuzz.partial_ratio,
+            limit=top_k * 3,
+            score_cutoff=max(45, score_cutoff - 10)
+        )
+        # fusion garde le meilleur score par titre
+        best = {}
+        for t, s, *_ in matches + extra:
+            best[t] = max(best.get(t, 0), int(s))
+        matches = sorted(best.items(), key=lambda x: x[1], reverse=True)
 
-    # 3) Retour formaté
-    out = []
-    seen = set()
-    for title_match, score, _ in matches:
-        if title_match in seen:
+    out, seen = [], set()
+    for item in matches:
+        # item = (title, score, idx) ou (title, score)
+        t = item[0]
+        s = int(item[1])
+        if t in seen:
             continue
-        seen.add(title_match)
-        out.append({
-            "title": title_match,
-            "score": int(score),
-            "movie_id": id_by_title.get(title_match)
-        })
+        seen.add(t)
+        out.append({"title": t, "score": s, "movie_id": id_by_title.get(t)})
+        if len(out) >= top_k:
+            break
 
+    if not out:
+        raise HTTPException(status_code=404, detail="Aucune correspondance fiable trouvée.")
     return {"matches": out}
+
 
 
 # -- Genres uniques (sur la BDD)
@@ -809,6 +877,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
