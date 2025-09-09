@@ -80,16 +80,61 @@ def start_ui_run(input_title: str, user: str):
     mlflow.set_experiment("louve_movies_monitoring")
     return mlflow.start_run(run_name=f"ui_reco_{input_title}", nested=True)
 
+# --- Helpers reco/pagination ---
+def ensure_session_defaults():
+    for k, v in {
+        "current_recos": [],
+        "reco_pool": [],
+        "reco_shown_titles": [],
+        "reco_page": 0,
+        "page_size": 5,            # <- taille d’une page (contrôlée par le select_slider)
+        "fuzzy_matches_1": None,
+        "chosen_film": None,
+        "last_run_id": None,
+        "film_input": "",
+    }.items():
+        st.session_state.setdefault(k, v)
+
+def reset_reco(full=False):
+    st.session_state["current_recos"] = []
+    st.session_state["reco_pool"] = []
+    st.session_state["reco_shown_titles"] = []
+    st.session_state["reco_page"] = 0
+    st.session_state["last_run_id"] = None
+    if full:
+        st.session_state["chosen_film"] = None
+        st.session_state["fuzzy_matches_1"] = None
+        st.session_state["film_input"] = ""
+
+def page_from_pool():
+    pool = st.session_state.get("reco_pool", [])
+    shown = set(st.session_state.get("reco_shown_titles", []))
+    size = st.session_state.get("page_size", 5)
+    batch = [r for r in pool if r.get("title") not in shown][:size]
+    st.session_state["current_recos"] = batch
+    st.session_state["reco_shown_titles"].extend([r["title"] for r in batch])
+    st.session_state["reco_page"] += 1
+    return len(batch) > 0
+
+def parse_genres(raw):
+    if isinstance(raw, list):
+        return raw
+    if not raw:
+        return []
+    return [g.strip() for g in str(raw).replace("|", ",").split(",") if g.strip()]
+
+
 # -----------------------------
 # Application principale
 # -----------------------------
 def main_app():
+    ensure_session_defaults()
     # Header
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.title("🎮 Recommandation de Films Personnalisée")
+        st.title("🍿 Recommandation de Films Personnalisée")
     with col2:
-        st.write(f"👋 Connecté en tant que: **{st.session_state.username}**")
+        st.write(f"👋 Bonjour: **{st.session_state.username}**")
         if st.button("🚪 Se déconnecter"):
             logout()
 
@@ -106,25 +151,42 @@ def main_app():
     with tab1:
         st.subheader("✨ Noter un film que vous avez vu")
 
-        # Recherche
-        film_input = st.text_input("Entrez le titre du film :")
-        if st.button("Chercher", key="btn_search"):
-            st.session_state["fuzzy_matches_1"] = None
-            st.session_state["chosen_film"] = None
-            if film_input:
-                try:
-                    response = api_get(f"fuzzy_match/{film_input}")
-                    if response.status_code == 200:
-                        matches = response.json().get("matches", [])
-                        st.session_state["fuzzy_matches_1"] = matches if matches else []
-                        if not matches:
-                            st.warning("⚠️ Aucun film trouvé avec ce titre.")
-                    else:
-                        st.error("❌ Erreur lors de la recherche.")
-                except requests.exceptions.RequestException:
-                    st.error("❌ Erreur de connexion avec le serveur")
+        # === Taille de page (AJOUT 1) ===
+        st.select_slider(
+            "Films par page",
+            options=[3, 5, 8, 10],
+            value=st.session_state.get("page_size", 5),
+            key="page_size"
+        )
 
-        # Sélection du film
+        # === Recherche ===
+        film_input = st.text_input("Entrez le titre du film :", key="film_input")
+        c_search, c_reset_search = st.columns([1, 1])
+        with c_search:
+            if st.button("Chercher", key="btn_search"):
+                reset_reco(full=True)
+                st.session_state["fuzzy_matches_1"] = None
+                st.session_state["chosen_film"] = None
+                if film_input:
+                    try:
+                        # Spinner (AJOUT 2)
+                        with st.spinner("🔎 Recherche des correspondances…"):
+                            response = api_get(f"fuzzy_match/{film_input}")
+                        if response.status_code == 200:
+                            matches = response.json().get("matches", [])
+                            st.session_state["fuzzy_matches_1"] = matches if matches else []
+                            if not matches:
+                                st.warning("⚠️ Aucun film trouvé avec ce titre.")
+                        else:
+                            st.error("❌ Erreur lors de la recherche.")
+                    except requests.exceptions.RequestException:
+                        st.error("❌ Erreur de connexion avec le serveur")
+        with c_reset_search:
+            if st.button("🧹 Réinitialiser la recherche", key="btn_reset_search"):
+                reset_reco(full=True)
+                st.rerun()
+
+        # === Sélection du film ===
         if st.session_state.get("fuzzy_matches_1"):
             matches_info = []
             for match in st.session_state["fuzzy_matches_1"]:
@@ -162,14 +224,19 @@ def main_app():
                             st.button("✅ Sélectionné", key=unique_key, disabled=True)
                         else:
                             if st.button("Sélectionner", key=unique_key):
+                                # on garde la recherche mais on réinitialise l'état reco
+                                reset_reco(full=False)
                                 st.session_state["chosen_film"] = match["title"]
 
-        # Notation
+        # === Notation du film sélectionné ===
         chosen_film = st.session_state.get("chosen_film")
         if chosen_film:
             st.success(f"🎬 Film sélectionné : {chosen_film}")
-            note_input = st.number_input("Note du film (0.0 - 10.0)", min_value=0.0, max_value=10.0,
-                                         value=5.0, step=0.1, format="%.1f", key="note_input")
+            note_input = st.number_input(
+                "Note du film (0.0 - 10.0)",
+                min_value=0.0, max_value=10.0, value=5.0, step=0.1, format="%.1f",
+                key="note_input"
+            )
             if st.button("Valider la note"):
                 payload = {"title": chosen_film, "rating": note_input}
                 update_resp = api_post("update_rating", payload)
@@ -179,7 +246,7 @@ def main_app():
                     detail = update_resp.json().get("detail", "Erreur inconnue")
                     st.error(f"❌ Échec : {detail}")
 
-        # Recommandations personnalisées (avec run_id + feedback)
+        # === Recommandations personnalisées (avec run_id + feedback) ===
         if chosen_film:
             st.subheader("🔍 Obtenir une recommandation personnalisée")
             if st.button("Me recommander des films", key="btn_reco"):
@@ -189,49 +256,55 @@ def main_app():
                         mlflow.log_param("user", st.session_state.username)
                         mlflow.log_param("film_input", chosen_film)
 
-                        # Appel API
-                        response = api_get(f"recommend_xgb_personalized/{chosen_film}", params={"top_k": 5})
+                        # Spinner (AJOUT 2)
+                        with st.spinner("🧠 Calcul des recommandations…"):
+                            # Appel API : on demande large puis on pagine côté UI
+                            response = api_get(
+                                f"recommend_xgb_personalized/{chosen_film}",
+                                params={"top_k": 50}
+                            )
+
                         if response.status_code != 200:
                             st.error(response.json().get("detail", "Erreur inconnue"))
                         else:
                             payload = response.json()
                             st.session_state["last_run_id"] = payload.get("run_id")
                             recos = payload.get("recommendations", [])
-                            mlflow.log_param("n_recos", int(len(recos)))
 
-                            # Log des scores (UI) dans le nested run
-                            for i, reco in enumerate(recos, start=1):
-                                mlflow.log_metric("pred_score", float(reco.get("pred_score", 0.0)), step=i)
+                            # dédoublonnage
+                            seen, pool = set(), []
+                            for r in recos:
+                                t = r.get("title")
+                                if t and t not in seen:
+                                    seen.add(t)
+                                    pool.append(r)
 
-                            # Artifact JSON des recos UI
-                            # with tempfile.TemporaryDirectory() as tmp:
-                            #     path_json = os.path.join(tmp, "streamlit_recommendations.json")
-                            #     with open(path_json, "w", encoding="utf-8") as f:
-                            #         json.dump(recos, f, ensure_ascii=False, indent=2)
-                            #     mlflow.log_artifact(path_json)
+                            st.session_state["reco_pool"] = pool
+                            st.session_state["reco_shown_titles"] = []
+                            st.session_state["reco_page"] = 0
 
-                            if recos:
+                            if page_from_pool():
                                 st.success("🎯 Recommandations trouvées !")
-                                st.session_state["current_recos"] = recos
                             else:
                                 st.info("Aucune recommandation trouvée pour ce film")
+
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
                 except Exception as e:
                     st.error(f"❌ Erreur MLflow : {e}")
                     st.text(traceback.format_exc())
 
-            # Affichage + Feedback
+            # --- Affichage + Feedback (page courante) ---
             recos = st.session_state.get("current_recos", [])
-            run_id = st.session_state.get("last_run_id")
+            run_id = st.session_state.get("last_run_id") or "no_run"
 
             def send_feedback(reco_title: str, pred_label: int, pred_score: float, liked: int):
-                if not run_id:
+                if st.session_state.get("last_run_id") is None:
                     st.error("Run MLflow introuvable. Relance une recommandation.")
                     return
                 try:
                     fb = {
-                        "run_id": run_id,
+                        "run_id": st.session_state["last_run_id"],
                         "user_name": st.session_state.username,
                         "input_title": st.session_state.get("chosen_film"),
                         "reco_title": reco_title,
@@ -249,7 +322,7 @@ def main_app():
                     st.error("❌ Erreur de connexion avec le serveur")
 
             if recos:
-                for reco in recos:
+                for i, reco in enumerate(recos, start=1):
                     cols = st.columns([1, 3])
                     with cols[0]:
                         if reco.get("poster_url"):
@@ -257,9 +330,7 @@ def main_app():
                     with cols[1]:
                         reco_title = reco.get("title", "Titre inconnu")
                         raw_genres = reco.get("genres", [])
-                        genres = raw_genres if isinstance(raw_genres, list) else [
-                            g.strip() for g in str(raw_genres).split(",")
-                        ]
+                        genres = parse_genres(raw_genres)
                         reco_synopsis = reco.get("synopsis", "Pas de synopsis disponible.")
                         score = float(reco.get("pred_score", 0.0))
                         pred_label = int(score >= 0.5)
@@ -271,11 +342,37 @@ def main_app():
 
                         b1, b2 = st.columns(2)
                         with b1:
-                            if st.button("👍 Ça m'intéresse", key=f"like_{reco_title}_{hash(score)}", disabled=(run_id is None)):
+                            if st.button(
+                                "👍 Ça m'intéresse",
+                                key=f"like_{reco_title}_{i}_{run_id}",
+                                disabled=(st.session_state.get('last_run_id') is None)
+                            ):
                                 send_feedback(reco_title, pred_label, score, liked=1)
                         with b2:
-                            if st.button("👎 Pas pour moi", key=f"dislike_{reco_title}_{hash(score)}", disabled=(run_id is None)):
+                            if st.button(
+                                "👎 Pas pour moi",
+                                key=f"dislike_{reco_title}_{i}_{run_id}",
+                                disabled=(st.session_state.get('last_run_id') is None)
+                            ):
                                 send_feedback(reco_title, pred_label, score, liked=0)
+
+                # --- Pagination / Reset (après la liste) ---
+                left = max(0, len(st.session_state.get("reco_pool", [])) - len(st.session_state.get("reco_shown_titles", [])))
+                c_more, c_reset = st.columns([1, 1])
+
+                with c_more:
+                    if st.button(
+                        f"🔁 Proposer d'autres recommandations ({left} restants)",
+                        key=f"btn_more_reco_{st.session_state.get('reco_page', 0)}",
+                        disabled=not bool(st.session_state.get('reco_pool')) or left == 0
+                    ):
+                        if not page_from_pool():
+                            st.info("Plus de recommandations disponibles.")
+
+                with c_reset:
+                    if st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco"):
+                        reset_reco(full=True)
+                        st.rerun()
 
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
@@ -332,7 +429,7 @@ def main_app():
                         with cols[1]:
                             title = movie.get("title", "Titre inconnu")
                             raw_genres = movie.get("genres", [])
-                            genres = raw_genres if isinstance(raw_genres, list) else [g.strip() for g in str(raw_genres).split(",")]
+                            genres = parse_genres(raw_genres)
                             st.markdown(f"### 🎬 {title} ({year})")
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                             st.write(synopsis)
@@ -408,10 +505,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
