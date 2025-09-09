@@ -248,8 +248,13 @@ def main_app():
                 key="note_input"
             )
             if st.button("Valider la note"):
-                payload = {"title": chosen_film, "rating": note_input}
+                payload = {
+                    "title": chosen_film,
+                    "rating": note_input,
+                    "user_name": st.session_state.username,  # <- ajouté
+                }
                 update_resp = api_post("update_rating", payload)
+
                 if update_resp.status_code == 200:
                     st.success(f"✅ La note {note_input} a été enregistrée pour '{chosen_film}' !")
                 else:
@@ -586,4 +591,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
