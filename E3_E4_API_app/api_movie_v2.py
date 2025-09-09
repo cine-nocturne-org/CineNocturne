@@ -269,8 +269,14 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
     # 2) Démarrer un run MLflow dans un contexte (auto-close)
     with mlflow_start_inference_run(input_title=title, top_k=top_k) as run:
-        run_id = run.info.run_id
-        logger.info(f"[MLflow] Inference run_id={run_id}")
+        try:
+            info = getattr(run, "info", None)
+            rid = getattr(info, "run_id", None) if info is not None else None
+            if rid is None:
+                rid = getattr(run, "run_id", "")
+            run_id = str(rid)
+        except Exception:
+            run_id = ""
 
         # Tags + paramètres de base
         mlflow.set_tags({
@@ -803,6 +809,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
