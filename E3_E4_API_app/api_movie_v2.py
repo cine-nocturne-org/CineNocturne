@@ -213,7 +213,7 @@ async def update_rating(payload: RatingUpdate):
             if result.rowcount == 0:
                 raise HTTPException(status_code=404, detail=f"Film '{title}' non trouvé.")
 
-            # NEW: historiser la note dans user_ratings
+            # Historiser la note
             conn.execute(
                 text("""
                     INSERT INTO user_ratings (user_name, title, rating)
@@ -221,6 +221,10 @@ async def update_rating(payload: RatingUpdate):
                 """),
                 {"u": user_name, "t": title, "r": float(rating)}
             )
+
+        # NEW: refresh cache en mémoire pour les recos (après commit)
+        if title in movies_dict:
+            movies_dict[title]["user_rating"] = float(rating)
 
         return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
 
@@ -230,6 +234,7 @@ async def update_rating(payload: RatingUpdate):
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 # -- Recommandations XGB personnalisées (publique pour l’UI)
@@ -746,7 +751,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
 async def get_user_ratings(user_name: str, limit: int = 200):
     try:
         query = """
-        SELECT ur.ts, ur.title, ur.rating, m.genres, m.release_year
+        SELECT ur.ts, ur.title, ur.rating, m.genres, m.release_year, m.poster_url
         FROM user_ratings ur
         LEFT JOIN movies m ON m.title = ur.title
         WHERE ur.user_name = :u
@@ -758,5 +763,5 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
+
