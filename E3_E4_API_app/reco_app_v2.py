@@ -495,7 +495,6 @@ def main_app():
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
 
-    
     # ------------------------------
     # Onglet 4 : Dashboard perso
     # ------------------------------
@@ -507,66 +506,106 @@ def main_app():
         else:
             with st.spinner("Chargement de tes statistiques…"):
                 resp = api_get(f"user_stats/{user}")
+    
             if resp.status_code != 200:
-                st.error(resp.json().get("detail", "Impossible de récupérer les statistiques."))
-            else:
+                # Essaie JSON sinon texte brut
+                try:
+                    err = resp.json()
+                    msg = err.get("detail") or err.get("message") or str(err)
+                except Exception:
+                    msg = f"Erreur {resp.status_code} — {resp.text[:300]}"
+                st.error(msg)
+                st.stop()
+    
+            try:
                 stats = resp.json()
+            except Exception:
+                st.error("Réponse invalide du serveur (non-JSON).")
+                st.stop()
     
-                # KPIs
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("👍 Likes", f"{stats['likes']}")
-                c2.metric("👎 Dislikes", f"{stats['dislikes']}")
-                c3.metric("Taux de like", f"{stats['like_rate']*100:.0f}%")
-                c4.metric("Accuracy modèle", f"{stats['accuracy']*100:.0f}%")
+            # --- KPIs
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("👍 Likes", f"{stats['likes']}")
+            c2.metric("👎 Dislikes", f"{stats['dislikes']}")
+            c3.metric("Taux de like", f"{stats['like_rate']*100:.0f}%")
+            c4.metric("Accuracy modèle", f"{stats['accuracy']*100:.0f}%")
     
-                # Confusion matrix light
-                conf = stats["confusion"]
-                st.caption("Confusion (sur les recos où tu as donné un avis)")
-                st.table(pd.DataFrame({
-                    "Prédit 👍": [conf["tp"], conf["fp"]],
-                    "Prédit 👎": [conf["fn"], conf["tn"]],
-                }, index=["Réel 👍", "Réel 👎"]))
+            # --- Confusion matrix light
+            conf = stats["confusion"]
+            st.caption("Confusion (sur les recos où tu as donné un avis)")
+            st.table(pd.DataFrame({
+                "Prédit 👍": [conf["tp"], conf["fp"]],
+                "Prédit 👎": [conf["fn"], conf["tn"]],
+            }, index=["Réel 👍", "Réel 👎"]))
     
-                # Genres préférés (bar chart)
-                st.markdown("### 🎭 Genres les plus likés")
-                if stats["top_genres"]:
-                    df_g = pd.DataFrame(stats["top_genres"])
-                    df_g = df_g.set_index("genre")
-                    st.bar_chart(df_g["likes"])
-                else:
-                    st.info("Aucun genre favori détecté pour l’instant.")
+            # --- Genres préférés (bar chart)
+            st.markdown("### 🎭 Genres les plus likés")
+            if stats["top_genres"]:
+                df_g = pd.DataFrame(stats["top_genres"]).set_index("genre")
+                st.bar_chart(df_g["likes"])
+            else:
+                st.info("Aucun genre favori détecté pour l’instant.")
     
-                # Likes par année (line chart)
-                st.markdown("### 📅 Likes par année de sortie")
-                if stats["by_year"]:
-                    df_y = pd.DataFrame(stats["by_year"])
-                    df_y = df_y.sort_values("year")
-                    df_y = df_y.set_index("year")
-                    st.line_chart(df_y["likes"])
-                else:
-                    st.info("Aucune donnée par année pour l’instant.")
+            # --- Likes par année (line chart)
+            st.markdown("### 📅 Likes par année de sortie")
+            if stats["by_year"]:
+                df_y = pd.DataFrame(stats["by_year"]).sort_values("year").set_index("year")
+                st.line_chart(df_y["likes"])
+            else:
+                st.info("Aucune donnée par année pour l’instant.")
     
-                # Historique récent
-                st.markdown("### 🕒 Derniers avis")
-                recent = pd.DataFrame(stats["recent"])
-                if not recent.empty:
-                    recent_display = recent.copy()
-                    recent_display["avis"] = recent_display["liked"].map({1: "👍", 0: "👎"})
-                    recent_display = recent_display[["ts","reco_title","avis","pred_score","genres","release_year"]]
-                    recent_display.rename(columns={
+            # --- Historique récent des feedbacks
+            st.markdown("### 🕒 Derniers avis")
+            recent = pd.DataFrame(stats["recent"])
+            if not recent.empty:
+                recent_display = recent.copy()
+                recent_display["avis"] = recent_display["liked"].map({1: "👍", 0: "👎"})
+                recent_display = recent_display[["ts","reco_title","avis","pred_score","genres","release_year"]]
+                recent_display = recent_display.rename(columns={
+                    "ts": "horodatage",
+                    "reco_title": "film",
+                    "pred_score": "score_modèle",
+                    "genres": "genres",
+                    "release_year": "année",
+                })
+                st.dataframe(recent_display, use_container_width=True, hide_index=True)
+                csv_fb = recent_display.to_csv(index=False).encode("utf-8")
+                st.download_button("📥 Exporter l'historique (CSV)", csv_fb, file_name="historique_feedback.csv", mime="text/csv")
+            else:
+                st.info("Pas encore d’historique de feedback. Like/dislike quelques recos !")
+    
+            # --- 🆕 Historique des films notés (via /user_ratings)
+            st.markdown("### 📝 Mes films notés")
+            r = api_get(f"user_ratings/{user}", params={"limit": 500})
+            if r.status_code != 200:
+                try:
+                    msg = r.json().get("detail", "Impossible de récupérer l'historique des notes.")
+                except Exception:
+                    msg = f"Erreur {r.status_code} — {r.text[:300]}"
+                st.warning(msg)
+            else:
+                ratings = r.json().get("ratings", [])
+                if ratings:
+                    df_r = pd.DataFrame(ratings)
+                    df_r = df_r.rename(columns={
                         "ts": "horodatage",
-                        "reco_title": "film",
-                        "pred_score": "score_modèle",
+                        "title": "film",
+                        "rating": "note",
                         "genres": "genres",
-                        "release_year": "année"
-                    }, inplace=True)
-                    st.dataframe(recent_display, use_container_width=True, hide_index=True)
+                        "release_year": "année",
+                    })
+                    # tri + arrondi
+                    if "horodatage" in df_r:
+                        df_r = df_r.sort_values("horodatage", ascending=False)
+                    if "note" in df_r:
+                        df_r["note"] = pd.to_numeric(df_r["note"], errors="coerce").round(1)
+                    st.dataframe(df_r[["horodatage","film","note","genres","année","poster_url"]], use_container_width=True, hide_index=True)
     
-                    # Export CSV
-                    csv = recent_display.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Exporter l'historique (CSV)", csv, file_name="historique_feedback.csv", mime="text/csv")
+                    csv_notes = df_r.to_csv(index=False).encode("utf-8")
+                    st.download_button("📥 Exporter mes notes (CSV)", csv_notes, file_name="mes_notes.csv", mime="text/csv")
                 else:
-                    st.info("Pas encore d’historique. Like ou dislike quelques recos pour alimenter le dashboard !")
+                    st.info("Tu n'as pas encore noté de film.")
+
 
 
 # -----------------------------
@@ -591,5 +630,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
