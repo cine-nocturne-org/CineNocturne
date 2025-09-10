@@ -63,12 +63,15 @@ jobs:
           path: E3_E4_API_app/model_reco.out.ipynb
           if-no-files-found: warn
 
+      - name: Setup Git LFS
+        run: |
+          git lfs install
+          git lfs ls-files || true
+
       - name: Commit model artifacts
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore(model): update trained artifacts [skip ci]"
           file_pattern: |
             E3_E4_API_app/model/*.joblib
-            E3_E4_API_app/model/*.pkl
-            E3_E4_API_app/model/*.pickle
-            E3_E4_API_app/model/*.csv
+            E3_E4_API_app/model/movies_full.csv
