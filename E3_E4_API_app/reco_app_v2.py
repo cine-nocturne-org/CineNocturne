@@ -245,13 +245,13 @@ def main_app():
                         st.markdown("<div class='card'>", unsafe_allow_html=True)
             
                         if match.get("poster"):
-                            st.image(match["poster"], use_container_width=True)
+                            st.image(match["poster"], width='stretch)
                         st.caption(match.get("title", "Titre inconnu"))
             
                         key = f"select_{match.get('movie_id','na')}_{row}_{i}"
                         is_selected = (st.session_state.get("chosen_film") == match.get("title"))
                         label = "✅ Sélectionné" if is_selected else "Sélectionner"
-                        if st.button(label, key=key, use_container_width=True, disabled=is_selected):
+                        if st.button(label, key=key, width='stretch, disabled=is_selected):
                             reset_only_reco()
                             st.session_state["chosen_film"] = match.get("title")
             
@@ -360,7 +360,7 @@ def main_app():
                     cols = st.columns([1, 3])
                     with cols[0]:
                         if reco.get("poster_url"):
-                            st.image(reco["poster_url"], use_container_width=True)
+                            st.image(reco["poster_url"], width='stretch)
                     with cols[1]:
                         reco_title = reco.get("title", "Titre inconnu")
                         raw_genres = reco.get("genres", [])
@@ -457,7 +457,7 @@ def main_app():
                             continue
                         cols = st.columns([1, 3])
                         with cols[0]:
-                            st.image(poster, use_container_width=True)
+                            st.image(poster, width='stretch)
                         with cols[1]:
                             title = movie.get("title", "Titre inconnu")
                             raw_genres = movie.get("genres", [])
@@ -502,7 +502,7 @@ def main_app():
                         col1, col2 = st.columns([1,2])
                         with col1:
                             if details.get("poster_url"):
-                                st.image(details["poster_url"], use_container_width=True)
+                                st.image(details["poster_url"], width='stretch)
                         with col2:
                             st.markdown(f"### 🎬 {details['title']} ({details.get('releaseYear', 'N/A')})")
                             st.write(f"**Genres :** {details.get('genres', 'N/A')}")
@@ -629,7 +629,7 @@ def main_app():
                     "genres": "genres",
                     "release_year": "année",
                 })
-                st.dataframe(recent_display, use_container_width=True, hide_index=True)
+                st.dataframe(recent_display, width='stretch, hide_index=True)
                 csv_fb = recent_display.to_csv(index=False).encode("utf-8")
                 st.download_button("📥 Exporter l'historique (CSV)", csv_fb, file_name="historique_feedback.csv", mime="text/csv")
             else:
@@ -660,7 +660,7 @@ def main_app():
                         df_r = df_r.sort_values("horodatage", ascending=False)
                     if "note" in df_r:
                         df_r["note"] = pd.to_numeric(df_r["note"], errors="coerce").round(1)
-                    st.dataframe(df_r[["horodatage","film","note","genres","année","poster_url"]], use_container_width=True, hide_index=True)
+                    st.dataframe(df_r[["horodatage","film","note","genres","année","poster_url"]], width='stretch, hide_index=True)
     
                     csv_notes = df_r.to_csv(index=False).encode("utf-8")
                     st.download_button("📥 Exporter mes notes (CSV)", csv_notes, file_name="mes_notes.csv", mime="text/csv")
@@ -691,6 +691,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
