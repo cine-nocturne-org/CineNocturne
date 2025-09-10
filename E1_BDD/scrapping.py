@@ -162,7 +162,7 @@ def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
         data = r.json()
         total_pages = min(data.get('total_pages', 1), 500)
 
-        with tqdm(total=total_pages, desc=f"🎬 {genre_name}", unit="page", leave=True) as pbar:
+        with tqdm(total=total_pages, desc=f"🎬 {genre_name}", unit="page", dynamic_ncols=True, leave=False) as pbar:
             while page <= total_pages:
                 # dans la boucle while page <= total_pages:
                 params["page"] = page
@@ -354,4 +354,5 @@ if __name__ == "__main__":
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM movies")).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
+
 
