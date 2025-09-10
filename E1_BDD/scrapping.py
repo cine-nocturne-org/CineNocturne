@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 # =========================
 load_dotenv()
 
-API_KEY = os.getenv("TMDB_API_KEY", "6450515c5357c7e0d49ac4972810e9f4")  # <-- mets ta clé
+API_KEY = os.getenv("TMDB_API_KEY", "")  # <-- mets ta clé
 COUNTRY = os.getenv("TMDB_COUNTRY", "FR")          # pays pour watch/providers
 LANG    = os.getenv("TMDB_LANGUAGE", "fr-FR")      # langue de scraping
 DATABASE_URL = os.getenv(
@@ -335,7 +335,7 @@ def upsert_movies(df: pd.DataFrame, engine):
 # Main
 # =========================
 if __name__ == "__main__":
-    if API_KEY == "6450515c5357c7e0d49ac4972810e9f4":
+    if not API_KEY or not API_KEY.strip():
         raise SystemExit("⚠️ Configure TMDB_API_KEY (env/.env).")
     ensure_schema(engine)
 
@@ -354,3 +354,4 @@ if __name__ == "__main__":
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM movies")).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
+
