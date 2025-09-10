@@ -59,7 +59,7 @@ mlflow.set_experiment("louve_movies_monitoring")
 # ======================
 # 🗄️ Base de données
 # ======================
-DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
+DATABASE_URL = os.getenv("MYSQL_URL")
 engine = create_engine(DATABASE_URL)
 
 # Crée les tables si absentes
@@ -893,6 +893,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
