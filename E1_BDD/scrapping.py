@@ -207,29 +207,36 @@ def scrape_all_genres() -> pd.DataFrame:
         return df
 
     # 🔁 Fusionner les genres par movie_id (union unique, séparateur '|')
-    def _merge_genres(group: pd.DataFrame) -> str | None:
+    def _merge_genres(s: pd.Series) -> str | None:
         vals = set()
-        for g in group['genres'].dropna().astype(str):
-            for tok in g.replace(',', '|').split('|'):
+        for g in s.dropna().astype(str):
+            for tok in g.replace(",", "|").split("|"):
                 t = tok.strip()
                 if t:
                     vals.add(t)
-        return '|'.join(sorted(vals)) if vals else None
-
+        return "|".join(sorted(vals)) if vals else None
+    
+    # S’assurer que la colonne 'genres' existe avant le groupby
+    if "genres" not in df.columns:
+        df["genres"] = None
+    
     agg = {
-        'title': 'first',
-        'original_title': 'first',
-        'release_year': 'first',
-        'genres': _merge_genres,
-        'synopsis': lambda s: next((x for x in s if x and x != 'Résumé non disponible'), 'Résumé non disponible'),
-        'rating': 'max',
-        'vote_count': 'max',
-        'original_language': 'first',
-        'poster_url': lambda s: next((x for x in s if x), None),
-        'key_words': lambda s: join_unique([w for x in s.dropna().astype(str) for w in x.split(',')])
+        "title": "first",
+        "original_title": "first",
+        "release_year": "first",
+        "genres": _merge_genres,
+        "synopsis": lambda s: next((x for x in s if x and x != "Résumé non disponible"),
+                                   "Résumé non disponible"),
+        "rating": "max",
+        "vote_count": "max",
+        "original_language": "first",
+        "poster_url": lambda s: next((x for x in s if x), None),
+        "key_words": lambda s: join_unique([w for x in s.dropna().astype(str) for w in x.split(",")]),
     }
-    df_merged = df.groupby('movie_id', as_index=False).agg(agg)
+    
+    df_merged = df.groupby("movie_id", as_index=False).agg(agg)
     return df_merged
+
 
 # =========================
 # Sauvegarde NON destructrice + providers
@@ -354,5 +361,6 @@ if __name__ == "__main__":
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM movies")).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
+
 
 
