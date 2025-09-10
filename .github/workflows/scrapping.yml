@@ -25,4 +25,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run scrapping script
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: python E1_BDD/scrapping.py
