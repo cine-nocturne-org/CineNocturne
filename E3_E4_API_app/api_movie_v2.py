@@ -1,6 +1,7 @@
 # api.py
 # ============================================================
 # 🎬 Louve Movies API — Recommandations + Monitoring MLflow
+# Corrigé : TF-IDF recalculée côté API avec le vectorizer du train
 # ============================================================
 
 from fastapi import FastAPI, HTTPException, Depends, Query
@@ -14,7 +15,7 @@ import pandas as pd
 import numpy as np
 import joblib
 from sklearn.metrics.pairwise import cosine_similarity
-from rapidfuzz import process, fuzz
+from sklearn.neighbors import NearestNeighbors
 import unicodedata
 import random
 import io
@@ -29,12 +30,9 @@ import tempfile
 import json
 import re
 
-
 # -------- Config locale du projet --------
 # (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
 from E3_E4_API_app import config
-
-STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
 
 # ======================
 # 🔧 Logging
@@ -61,69 +59,6 @@ mlflow.set_experiment("louve_movies_monitoring")
 # ======================
 DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-
-# Crée les tables si absentes
-with engine.begin() as conn:
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS feedback (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            user_name VARCHAR(255),
-            input_title VARCHAR(512),
-            reco_title VARCHAR(512),
-            pred_label TINYINT,
-            pred_score FLOAT,
-            liked TINYINT,
-            run_id VARCHAR(64)
-        )
-    """))
-    # NEW: historique des notes utilisateurs
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS user_ratings (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            user_name VARCHAR(255),
-            title VARCHAR(512),
-            rating FLOAT
-        )
-    """))
-
-# ======================
-# 🔒 Auth (Basic ou Bearer)
-# ======================
-load_dotenv()
-USERNAME: str = os.getenv("API_USERNAME")
-PASSWORD: str = os.getenv("API_PASSWORD")
-API_TOKEN: str = os.getenv("API_TOKEN")
-
-security_basic = HTTPBasic(auto_error=False)
-api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
-
-def verify_credentials(
-    credentials: HTTPBasicCredentials = Depends(security_basic),
-    api_key: str = Depends(api_key_header)
-):
-    # Mode 1 : Basic Auth
-    if credentials and credentials.username == USERNAME and credentials.password == PASSWORD:
-        return True
-    # Mode 2 : Bearer Token
-    if api_key and api_key == f"Bearer {API_TOKEN}":
-        return True
-    raise HTTPException(status_code=401, detail="Non autorisé")
-
-# ======================
-# 🤖 Chargement modèles & données
-# ======================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "model")
-
-# Modèles / objets
-xgb_model = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
-mlb = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
-scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
-nn_full = joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"))
-svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
-tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
 
 def ensure_column_exists(table: str, column: str, coldef: str):
     """Crée la colonne si absente (idempotent)."""
@@ -192,10 +127,92 @@ def ensure_movies_schema():
             except SQLAlchemyError:
                 pass  # non bloquant (selon version/permissions)
 
-
 # --- migrations sûres avant de charger en mémoire ---
 ensure_movies_schema()
 ensure_column_exists("movies", "user_rating", "FLOAT")  # (redondant mais OK)
+
+# ======================
+# 🔒 Auth (Basic ou Bearer)
+# ======================
+load_dotenv()
+USERNAME: str = os.getenv("API_USERNAME")
+PASSWORD: str = os.getenv("API_PASSWORD")
+API_TOKEN: str = os.getenv("API_TOKEN")
+
+security_basic = HTTPBasic(auto_error=False)
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+def verify_credentials(
+    credentials: HTTPBasicCredentials = Depends(security_basic),
+    api_key: str = Depends(api_key_header)
+):
+    # Mode 1 : Basic Auth
+    if credentials and credentials.username == USERNAME and credentials.password == PASSWORD:
+        return True
+    # Mode 2 : Bearer Token
+    if api_key and api_key == f"Bearer {API_TOKEN}":
+        return True
+    raise HTTPException(status_code=401, detail="Non autorisé")
+
+# ======================
+# 🧠 Helpers
+# ======================
+STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
+
+def normalize_text(text: str) -> str:
+    text = text.strip()
+    text = unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("utf-8")
+    return text.lower()
+
+def _preprocess_text(text: str) -> str:
+    if not text:
+        return ""
+    t = text.lower()
+    return re.sub(r"[^a-z0-9\s]", " ", t)
+
+def _split_genres(s: str):
+    if not s:
+        return []
+    parts = []
+    for token in str(s).split("|"):
+        parts.extend([g.strip() for g in token.split(",") if g.strip()])
+    return parts
+
+def safe_mlb_transform(_mlb, genre_lists):
+    try:
+        return _mlb.transform(genre_lists)
+    except ValueError:
+        known = set(_mlb.classes_)
+        cleaned = [[g for g in gs if g in known] for gs in genre_lists]
+        return _mlb.transform(cleaned)
+
+def mlflow_start_inference_run(input_title: str, top_k: int):
+    try:
+        mlflow.set_experiment("louve_movies_monitoring")
+        if mlflow.active_run() is not None:
+            mlflow.end_run()
+        return mlflow.start_run(run_name=f"recommend_{input_title}")
+    except Exception as e:
+        logger.warning(f"MLflow indisponible: {e}")
+        class DummyRun:
+            info = type("I", (), {"run_id": ""})()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+        return DummyRun()
+
+# ======================
+# 🤖 Chargement modèles & données (CORRIGÉ)
+# ======================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "model")
+
+# Modèles / objets (du train)
+xgb_model   = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
+vectorizer  = joblib.load(os.path.join(MODEL_DIR, "reco_vectorizer.joblib"))  # ✅ nouveau
+mlb         = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
+scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
+svd_full    = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
+# ❌ on ne charge plus tfidf_matrix_full.joblib ni nn_full.joblib
 
 # Films depuis BDD (mémoire)
 with engine.connect() as conn:
@@ -203,60 +220,63 @@ with engine.connect() as conn:
         text("""
             SELECT movie_id, title, genres, release_year, synopsis, poster_url, rating, user_rating
             FROM movies
+            WHERE synopsis IS NOT NULL
         """)
     ).mappings().all()
-    
-if not rows:
-    rows = []
 
+rows = rows or []
 
-movies = []
-titles = []
-genres_list_all = []
-years = []
+movies = [dict(r) for r in rows]
+titles = [r["title"] for r in rows]
+years  = [r["release_year"] if r["release_year"] is not None else 2000 for r in rows]
+genres_list_all = [_split_genres(r["genres"]) for r in rows]
+syn_clean = [_preprocess_text(r["synopsis"]) for r in rows]
 
-for r in rows:
-    raw = r["genres"] or ""
-    parts = []
-    for token in raw.split("|"):
-        parts.extend([g.strip() for g in token.split(",") if g.strip()])
-    genres_list = parts
-    movies.append(dict(r))
-    titles.append(r["title"])
-    genres_list_all.append(genres_list)
-    years.append(r["release_year"] if r["release_year"] else 2000)
+# --- TF-IDF recalculée sur la BDD actuelle avec le vectorizer du train ---
+tfidf_matrix = vectorizer.transform(syn_clean)
 
-def safe_mlb_transform(mlb, genre_lists):
-    try:
-        return mlb.transform(genre_lists)
-    except ValueError:
-        known = set(mlb.classes_)
-        cleaned = [[g for g in gs if g in known] for gs in genre_lists]
-        return mlb.transform(cleaned)
+# --- SVD -> vecteurs compacts (mêmes composantes qu’à l’entraînement) ---
+svd_vecs = svd_full.transform(tfidf_matrix)
 
-# Encodage genres & années
+# --- Encodages genres / années ---
 genres_encoded_matrix = safe_mlb_transform(mlb, genres_list_all)
-years_scaled = scaler_year.transform(np.array([[y] for y in years]))
+years_scaled = scaler_year.transform(np.array(years).reshape(-1, 1))
 
-# Accès rapide par titre (sensible à la casse telle que BDD)
-movies_dict = {movie["title"]: movie for movie in movies}
+# --- kNN recalculé (aligné sur la TF-IDF actuelle) ---
+nn = NearestNeighbors(metric="cosine", algorithm="brute")
+nn.fit(tfidf_matrix)
 
-# ======================
-# 🧠 Helpers
-# ======================
-def normalize_text(text: str) -> str:
-    text = text.strip()
-    text = unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("utf-8")
-    return text.lower()
+# --- Garde-fous d’alignement : on tronque toutes les structures au minimum commun ---
+n = min(
+    len(titles),
+    getattr(tfidf_matrix, "shape", [0])[0],
+    getattr(genres_encoded_matrix, "shape", [0])[0],
+    getattr(years_scaled, "shape", [0])[0],
+    getattr(svd_vecs, "shape", [0])[0],
+)
 
-def mlflow_start_inference_run(input_title: str, top_k: int):
-    mlflow.set_experiment("louve_movies_monitoring")
-    # 🔒 si un run est encore actif (exception précédente / requête précédente), on le ferme
-    if mlflow.active_run() is not None:
-        mlflow.end_run()
-    # on renvoie l’objet contexte ActiveRun
-    return mlflow.start_run(run_name=f"recommend_{input_title}")
+if n == 0:
+    logger.error("Catalogue vide ou artefacts incompatibles (n=0).")
+    titles = []
+    movies = []
+    genres_list_all = []
+    years = []
+else:
+    if len(titles) > n:
+        titles = titles[:n]
+        movies = movies[:n]
+        genres_list_all = genres_list_all[:n]
+        years = years[:n]
+    if getattr(tfidf_matrix, "shape", [0])[0] > n:
+        tfidf_matrix = tfidf_matrix[:n]
+    if getattr(genres_encoded_matrix, "shape", [0])[0] > n:
+        genres_encoded_matrix = genres_encoded_matrix[:n]
+    if getattr(years_scaled, "shape", [0])[0] > n:
+        years_scaled = years_scaled[:n]
+    if getattr(svd_vecs, "shape", [0])[0] > n:
+        svd_vecs = svd_vecs[:n]
 
+movies_dict = {m["title"]: m for m in movies}
 
 # ======================
 # 📦 Pydantic Models
@@ -328,25 +348,19 @@ async def update_rating(payload: RatingUpdate):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
-
 # -- Recommandations XGB personnalisées (publique pour l’UI)
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    """
-    Endpoint de recommandation :
-    - construit des candidats via similarité TF-IDF + filtre genres
-    - score via XGB + réajustements (user_rating, movie_rating)
-    - logge dans MLflow (metrics + artifacts)
-    - ferme automatiquement le run à la fin (context manager)
-    """
+    if not titles:
+        raise HTTPException(status_code=500, detail="Catalogue indisponible.")
+
     # 1) Trouver l'index du film d'entrée
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    # 2) Démarrer un run MLflow dans un contexte (auto-close)
+    # 2) Démarrer un run MLflow (en mode dégradé si indisponible)
     with mlflow_start_inference_run(input_title=title, top_k=top_k) as run:
         try:
             info = getattr(run, "info", None)
@@ -357,31 +371,44 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         except Exception:
             run_id = ""
 
-        # Tags + paramètres de base
-        mlflow.set_tags({
-            "stage": "inference",
-            "component": "xgb_recommender",
-            "source": "api",
-        })
-        mlflow.log_param("input_title", title)
-        mlflow.log_param("top_k", int(top_k))
+        # Tags + paramètres de base (protégés)
+        try:
+            mlflow.set_tags({
+                "stage": "inference",
+                "component": "xgb_recommender",
+                "source": "api",
+            })
+            mlflow.log_param("input_title", title)
+            mlflow.log_param("top_k", int(top_k))
+        except Exception:
+            pass
 
         # 3) Notes du film d'entrée
         input_movie = movies_dict.get(title, {})
         input_user_rating = float(input_movie.get("user_rating") or 0.0)
         input_movie_rating = float(input_movie.get("rating") or 5.0)
-        mlflow.log_metric("user_rating", input_user_rating)
-        mlflow.log_metric("movie_rating", input_movie_rating)
+        try:
+            mlflow.log_metric("user_rating", input_user_rating)
+            mlflow.log_metric("movie_rating", input_movie_rating)
+        except Exception:
+            pass
 
         # 4) Candidats par similarité TF-IDF + filtre genres
+        N = getattr(tfidf_matrix, "shape", [0])[0]
+        if idx >= N:
+            raise HTTPException(status_code=500, detail="Catalogue ML et BDD désalignés (TF-IDF).")
+
         chosen_genres = set(genres_list_all[idx])
         vec = tfidf_matrix[idx].reshape(1, -1)
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
         cosine_sim[idx] = -1.0  # exclure le film lui-même
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
-        candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
-        mlflow.log_metric("n_candidates", int(len(candidate_indices)))
+        candidate_indices = [i for i in candidate_indices if i < N and (chosen_genres & set(genres_list_all[i]))]
+        try:
+            mlflow.log_metric("n_candidates", int(len(candidate_indices)))
+        except Exception:
+            pass
 
         if not candidate_indices:
             return {"run_id": run_id, "recommendations": []}
@@ -389,12 +416,15 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         # 5) Features pour XGB
         features_list, candidate_titles = [], []
         for i in candidate_indices:
-            svd_vec = svd_full.transform(tfidf_matrix[i].reshape(1, -1))
-            nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i].reshape(1, -1))
-            sims = 1 - nn_distances[0][1:] if nn_distances.shape[1] > 1 else np.array([0.0])
+            # SVD déjà calculé et aligné
+            svd_vec = svd_vecs[i].reshape(1, -1)
+
+            # distances kNN sur la matrice kNN recalc
+            dists, _ = nn.kneighbors(tfidf_matrix[i], n_neighbors=6)
+            sims = 1 - dists[0][1:] if dists.shape[1] > 1 else np.array([0.0])
 
             feature_vec = np.hstack([
-                svd_vec[0],
+                svd_vec.ravel(),
                 genres_encoded_matrix[i],
                 years_scaled[i],
                 sims.mean(), sims.max(), sims.min(), sims.std()
@@ -403,7 +433,10 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             candidate_titles.append(titles[i])
 
         if not features_list:
-            mlflow.log_metric("n_candidates", 0)
+            try:
+                mlflow.log_metric("n_candidates", 0)
+            except Exception:
+                pass
             return {"run_id": run_id, "recommendations": []}
 
         X = np.array(features_list)
@@ -430,9 +463,12 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             )
             pred_label = int(final_score >= 0.5)
 
-            # Metrics par rang
-            mlflow.log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
-            mlflow.log_metric("final_score", float(final_score), step=rank)
+            # Metrics par rang (protégées)
+            try:
+                mlflow.log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
+                mlflow.log_metric("final_score", float(final_score), step=rank)
+            except Exception:
+                pass
 
             rows_for_table.append({
                 "rank": rank,
@@ -453,32 +489,27 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "pred_label": pred_label,
             })
 
-        mlflow.log_metric("max_pred_score", float(proba_scaled.max()))
-        mlflow.log_metric("min_pred_score", float(proba_scaled.min()))
-
-        # 8) Artifacts (format JSON + tableau)
         try:
-            # MLflow ≥ 2.9
-            import pandas as _pd  # déjà importé en haut, mais sécurité
-            df_recos = _pd.DataFrame(rows_for_table)
-            # log_table si dispo
+            mlflow.log_metric("max_pred_score", float(proba_scaled.max()))
+            mlflow.log_metric("min_pred_score", float(proba_scaled.min()))
+        except Exception:
+            pass
+
+        # 8) Artifacts (format JSON + tableau) — best effort
+        try:
+            df_recos = pd.DataFrame(rows_for_table)
             if hasattr(mlflow, "log_table"):
                 mlflow.log_table(df_recos, artifact_file="recommendations.parquet")
             else:
-                # fallback CSV temporaire
                 with tempfile.TemporaryDirectory() as tmpdir:
                     path_csv = os.path.join(tmpdir, "recommendations.csv")
                     df_recos.to_csv(path_csv, index=False)
                     mlflow.log_artifact(path_csv)
-            # Liste des titres recommandés
             mlflow.log_dict([r["title"] for r in recos], artifact_file="top_titles.json")
-        except Exception as _:
-            # En cas d'échec artifact, on continue sans planter l'API
+        except Exception:
             pass
 
-        # Le run est automatiquement FERMÉ à la sortie du `with`
         return {"run_id": run_id, "recommendations": recos}
-
 
 # -- Enregistrer le feedback utilisateur (like/dislike) + accuracy online
 @app.post("/log_feedback", include_in_schema=False, dependencies=[Depends(verify_credentials)])
@@ -511,9 +542,12 @@ async def log_feedback(payload: FeedbackPayload):
         online_accuracy = float(correct) / float(total) if total > 0 else 0.0
 
         # 3) Log sans rouvrir le run (évite "already active")
-        client = MlflowClient()
-        client.log_metric(run_id=payload.run_id, key="online_accuracy", value=online_accuracy, step=total)
-        client.log_metric(run_id=payload.run_id, key="feedback_count", value=total, step=total)
+        try:
+            client = MlflowClient()
+            client.log_metric(run_id=payload.run_id, key="online_accuracy", value=online_accuracy, step=total)
+            client.log_metric(run_id=payload.run_id, key="feedback_count", value=total, step=total)
+        except Exception as e:
+            logger.warning(f"MLflowClient log_metric failed: {e}")
 
         return {"message": "Feedback enregistré", "online_accuracy": online_accuracy, "count": total}
 
@@ -521,7 +555,6 @@ async def log_feedback(payload: FeedbackPayload):
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
 
 # -- Fuzzy match titres
 @app.get("/fuzzy_match/{title}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
@@ -619,10 +652,11 @@ async def fuzzy_match(
     id_by_title = {r[1]: r[0] for r in rows}
 
     # Rerank avec RapidFuzz
+    from rapidfuzz import process, fuzz as rf_fuzz
     matches = process.extract(
         query=q,
         choices=candidates,
-        scorer=fuzz.WRatio,
+        scorer=rf_fuzz.WRatio,
         limit=top_k * 3,
         score_cutoff=int(score_cutoff)
     )
@@ -632,7 +666,7 @@ async def fuzzy_match(
         extra = process.extract(
             query=q,
             choices=candidates,
-            scorer=fuzz.partial_ratio,
+            scorer=rf_fuzz.partial_ratio,
             limit=top_k * 3,
             score_cutoff=max(45, score_cutoff - 10)
         )
@@ -658,8 +692,6 @@ async def fuzzy_match(
         raise HTTPException(status_code=404, detail="Aucune correspondance fiable trouvée.")
     return {"matches": out}
 
-
-
 # -- Genres uniques (sur la BDD)
 @app.get("/genres/", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def get_unique_genres():
@@ -669,9 +701,7 @@ async def get_unique_genres():
         with engine.connect() as conn:
             result = conn.execute(text(query)).fetchall()
             for row in result:
-                # Selon ton stockage, séparateur '|' ou ','
                 raw = row[0] or ""
-                # On accepte les 2 formats
                 parts = [g.strip() for token in raw.split("|") for g in token.split(",")]
                 parts = [g for g in parts if g]
                 all_genres.update(parts)
@@ -680,7 +710,6 @@ async def get_unique_genres():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
 
 # -- Détails d’un film + plateformes
 @app.get("/movie-details/{title}", dependencies=[Depends(verify_credentials)])
@@ -737,7 +766,6 @@ async def get_movie_details(title: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
 # -- Films aléatoires par genre et plateformes
 PLATFORM_TABLES = {
     "netflix": "netflix",
@@ -791,7 +819,6 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
 # -- Export CSV complet movie + plateformes (left join)
 @app.get("/download-movie-details/", dependencies=[Depends(verify_credentials)])
 async def download_movie_details():
@@ -843,7 +870,6 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
 
 # -- Stats utilisateur : historique likes/dislikes, genres préférés, accuracy, etc.
 @app.get("/user_stats/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
@@ -938,7 +964,6 @@ async def user_stats(user_name: str, limit_recent: int = 50):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
 # -- NEW: Historique des notes utilisateur (films notés via /update_rating)
 @app.get("/user_ratings/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def get_user_ratings(user_name: str, limit: int = 200):
@@ -957,11 +982,17 @@ async def get_user_ratings(user_name: str, limit: int = 200):
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
 
-
-
-
-
-
-
-
-
+# -- DEBUG / SANTÉ DU CATALOGUE
+@app.get("/_debug_catalog", include_in_schema=False)
+async def _debug_catalog():
+    try:
+        return {
+            "n_titles": len(titles),
+            "tfidf_rows": int(getattr(tfidf_matrix, "shape", [0])[0]),
+            "svd_rows": int(getattr(svd_vecs, "shape", [0])[0]),
+            "genres_rows": int(getattr(genres_encoded_matrix, "shape", [0])[0]),
+            "years_rows": int(getattr(years_scaled, "shape", [0])[0]),
+            "sample_titles": titles[:5],
+        }
+    except Exception as e:
+        return {"error": str(e)}
