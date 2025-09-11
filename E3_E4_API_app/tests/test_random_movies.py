@@ -1,10 +1,22 @@
 import os
+import sys
 import base64
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ---- mocks AVANT d'importer l'API (évite joblib.load & appels MLflow) ----
+joblib_mock = MagicMock()
+joblib_mock.load = MagicMock(return_value=MagicMock())
+sys.modules['joblib'] = joblib_mock
+
+sys.modules['mlflow'] = MagicMock()
+mlflow_tracking_mock = MagicMock()
+mlflow_tracking_mock.MlflowClient = MagicMock()
+sys.modules['mlflow.tracking'] = mlflow_tracking_mock
+# --------------------------------------------------------------------------
 
 import api_movie_v2
 client = TestClient(api_movie_v2.app)
@@ -20,12 +32,11 @@ def get_auth_headers():
         return {"Authorization": f"Bearer {token}"}
     raise ValueError("Aucun identifiant ou token fourni dans les variables d'environnement")
 
-@patch("api_movie_v2.get_engine")
-def test_get_random_movies_valid(mock_get_engine):
-    # faux engine + connexion (context manager)
-    mock_engine = MagicMock()
-    mock_conn_cm = mock_engine.connect.return_value
-    mock_conn = mock_conn_cm.__enter__.return_value
+@patch("api_movie_v2.engine.connect")
+def test_get_random_movies_valid(mock_connect):
+    # faux context manager: with engine.connect() as conn:
+    mock_conn = MagicMock()
+    mock_connect.return_value.__enter__.return_value = mock_conn
 
     # la requête renvoie 1 ligne exploitable
     mock_result = MagicMock()
@@ -33,7 +44,6 @@ def test_get_random_movies_valid(mock_get_engine):
         ("Zombieland", "Synopsis", "url", "Action,Comédie", "netflix", 2009)
     ]
     mock_conn.execute.return_value = mock_result
-    mock_get_engine.return_value = mock_engine
 
     # neutraliser l'aléa de random.sample
     with patch("api_movie_v2.random.sample", lambda seq, k: seq[:k]):
@@ -52,17 +62,15 @@ def test_get_random_movies_valid(mock_get_engine):
     assert data[0]["poster_url"] == "url"
     assert data[0]["synopsis"] == "Synopsis"
 
-@patch("api_movie_v2.get_engine")
-def test_get_random_movies_no_result(mock_get_engine):
-    mock_engine = MagicMock()
-    mock_conn_cm = mock_engine.connect.return_value
-    mock_conn = mock_conn_cm.__enter__.return_value
+@patch("api_movie_v2.engine.connect")
+def test_get_random_movies_no_result(mock_connect):
+    mock_conn = MagicMock()
+    mock_connect.return_value.__enter__.return_value = mock_conn
 
     # aucune ligne trouvée
     mock_result = MagicMock()
     mock_result.fetchall.return_value = []
     mock_conn.execute.return_value = mock_result
-    mock_get_engine.return_value = mock_engine
 
     resp = client.get(
         "/random_movies/?genre=Action&platforms=netflix&limit=1",
