@@ -239,23 +239,24 @@ def main_app():
             
                 # Centre la rangée si < 5 items
                 offset = (cols_per_row - len(row_matches)) // 2
-            
+
                 for i, match in enumerate(row_matches):
                     with cols[offset + i]:
-                        st.markdown("<div class='card'>", unsafe_allow_html=True)
-            
-                        if match.get("poster"):
-                            st.image(match["poster"], width='stretch')
-                        st.caption(match.get("title", "Titre inconnu"))
-            
-                        key = f"select_{match.get('movie_id','na')}_{row}_{i}"
-                        is_selected = (st.session_state.get("chosen_film") == match.get("title"))
-                        label = "✅ Sélectionné" if is_selected else "Sélectionner"
-                        if st.button(label, key=key, width='stretch', disabled=is_selected):
-                            reset_only_reco()
-                            st.session_state["chosen_film"] = match.get("title")
-            
-                        st.markdown("</div>", unsafe_allow_html=True)
+                        # ✅ La boîte avec bordure
+                        with st.container(border=True):
+                            if match.get("poster"):
+                                st.image(match["poster"], use_container_width=True)
+                
+                            st.caption(match.get("title", "Titre inconnu"))
+                
+                            key = f"select_{match.get('movie_id','na')}_{row}_{i}"
+                            is_selected = (st.session_state.get("chosen_film") == match.get("title"))
+                            label = "✅ Sélectionné" if is_selected else "Sélectionner"
+                
+                            if st.button(label, key=key, use_container_width=True, disabled=is_selected):
+                                reset_only_reco()
+                                st.session_state["chosen_film"] = match.get("title")
+
 
 
         # === Notation du film sélectionné ===
@@ -691,6 +692,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
