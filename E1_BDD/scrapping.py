@@ -62,7 +62,35 @@ CREATE FULLTEXT INDEX idx_movies_title_fulltext ON movies(title);
 
 def ensure_schema(engine):
     with engine.begin() as conn:
+        # 1) créer la table si absente
         conn.execute(text(DDL_MOVIES))
+
+        # 2) migrer colonnes manquantes (ajout sans casser l'existant)
+        required_cols = {
+            "original_title": "VARCHAR(255)",
+            "vote_count": "INT",
+            "key_words": "TEXT",
+            "user_rating": "FLOAT",
+            "platforms_flatrate": "VARCHAR(1024)",
+            "platforms_rent": "VARCHAR(1024)",
+            "platforms_buy": "VARCHAR(1024)",
+            "platform_link": "VARCHAR(512)",
+        }
+
+        # récupérer les colonnes existantes
+        existing = conn.execute(text("""
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies'
+        """)).fetchall()
+        existing_cols = {row[0] for row in existing}
+
+        # ajouter les colonnes manquantes
+        for col, ddl in required_cols.items():
+            if col not in existing_cols:
+                conn.execute(text(f"ALTER TABLE movies ADD COLUMN {col} {ddl}"))
+
+        # 3) FULLTEXT si absent
         has_idx = conn.execute(text("""
             SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS
             WHERE TABLE_SCHEMA = DATABASE()
@@ -73,7 +101,7 @@ def ensure_schema(engine):
             try:
                 conn.execute(text(DDL_FULLTEXT))
             except Exception:
-                pass  # non bloquant si la table est vide au premier run
+                pass  # non bloquant (selon version/permissions)
 
 # =========================
 # Utils
@@ -361,6 +389,7 @@ if __name__ == "__main__":
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM movies")).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
+
 
 
 
