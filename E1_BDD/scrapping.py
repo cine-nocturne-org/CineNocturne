@@ -1,34 +1,36 @@
-# scrapping_movies_fr_with_providers.py
+# E1_BDD/scrapping_movies_fr_with_providers.py
 import os
 import time
 import requests
 import pandas as pd
-from sqlalchemy import create_engine, text, Integer, String, Text, Float
+from sqlalchemy import create_engine, text
+from sqlalchemy import Integer, String, Text, Float
 from time import sleep
 from tqdm import tqdm
 from dotenv import load_dotenv
-
 
 # =========================
 # Config
 # =========================
 load_dotenv()
 
-API_KEY = os.getenv("TMDB_API_KEY", "")  # <-- mets ta clé
-COUNTRY = os.getenv("TMDB_COUNTRY", "FR")          # pays pour watch/providers
-LANG    = os.getenv("TMDB_LANGUAGE", "fr-FR")      # langue de scraping
-DATABASE_URL = os.getenv(
-    "MYSQL_URL",
-    "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
-)
-FETCH_PROVIDERS_FOR_EXISTING = os.getenv("FETCH_PROVIDERS_FOR_EXISTING", "0") == "1"
-REQUEST_SLEEP = float(os.getenv("REQUEST_SLEEP", "0.5"))  # pause entre pages (anti rate-limit)
+API_KEY = os.getenv("TMDB_API_KEY", "")                 # clé TMDB (via secrets/env)
+COUNTRY = os.getenv("TMDB_COUNTRY", "FR")               # pays pour watch/providers
+LANG    = os.getenv("TMDB_LANGUAGE", "fr-FR")           # langue de scraping
+DATABASE_URL = os.getenv("MYSQL_URL",                   # URL MySQL (via secrets/env)
+                         "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies")
 
-BASE_URL    = "https://api.themoviedb.org/3"
-DISCOVER_URL= f"{BASE_URL}/discover/movie"
-GENRE_URL   = f"{BASE_URL}/genre/movie/list"
-KEYWORDS_URL= f"{BASE_URL}/movie/{{movie_id}}/keywords"
-PROVIDERS_URL=f"{BASE_URL}/movie/{{movie_id}}/watch/providers"
+# Si = "1", on re-calcule aussi les providers pour les films déjà présents
+FETCH_PROVIDERS_FOR_EXISTING = os.getenv("FETCH_PROVIDERS_FOR_EXISTING", "0") == "1"
+
+# Pause entre pages (pour ménager l'API)
+REQUEST_SLEEP = float(os.getenv("REQUEST_SLEEP", "0.5"))
+
+BASE_URL      = "https://api.themoviedb.org/3"
+DISCOVER_URL  = f"{BASE_URL}/discover/movie"
+GENRE_URL     = f"{BASE_URL}/genre/movie/list"
+KEYWORDS_URL  = f"{BASE_URL}/movie/{{movie_id}}/keywords"
+PROVIDERS_URL = f"{BASE_URL}/movie/{{movie_id}}/watch/providers"
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
@@ -53,7 +55,7 @@ CREATE TABLE IF NOT EXISTS movies (
   platforms_rent VARCHAR(1024),
   platforms_buy VARCHAR(1024),
   platform_link VARCHAR(512)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 DDL_FULLTEXT = """
@@ -101,20 +103,30 @@ def ensure_schema(engine):
             try:
                 conn.execute(text(DDL_FULLTEXT))
             except Exception:
-                pass  # non bloquant (selon version/permissions)
+                # non bloquant (selon version/permissions)
+                pass
 
 # =========================
 # Utils
 # =========================
-def _get_with_retry(session, url, params=None, tries=3, wait=1.0):
-    """GET avec retry simple en cas de 429 (rate limit TMDB)."""
+def _get_with_retry(session_or_module, url, params=None, tries=3, wait=1.0):
+    """GET avec retry simple (ex: 429 rate-limit ou coupures)"""
+    last = None
     for i in range(tries):
-        r = session.get(url, params=params)
-        if r.status_code != 429:
-            return r
-        print(f"⚠️ Rate limit TMDB (429), retry dans {wait*(2**i):.1f}s...")
-        time.sleep(wait * (2 ** i))
-    return r
+        try:
+            r = session_or_module.get(url, params=params, timeout=30)
+            if r.status_code != 429:
+                return r
+            # 429 : rate limit
+            delay = wait * (2 ** i)
+            print(f"⚠️ Rate limit TMDB (429), retry dans {delay:.1f}s...")
+            time.sleep(delay)
+            last = r
+        except requests.RequestException as e:
+            delay = wait * (2 ** i)
+            print(f"⚠️ Erreur réseau {e.__class__.__name__}: {e}. Retry dans {delay:.1f}s...")
+            time.sleep(delay)
+    return last
 
 def safe_year(date_str: str | None) -> int | None:
     if not date_str:
@@ -138,18 +150,19 @@ def join_unique(items):
 # =========================
 def fetch_genres() -> dict[int, str]:
     r = _get_with_retry(requests, GENRE_URL, params={"api_key": API_KEY, "language": LANG})
-    if r.status_code == 200:
+    if r and r.status_code == 200:
         return {g['id']: g['name'] for g in r.json().get('genres', [])}
-    print(f"Erreur genres : {r.status_code} -> {r.text[:200]}")
+    code = r.status_code if r else "?"
+    body = r.text[:200] if r and hasattr(r, "text") else ""
+    print(f"Erreur genres : {code} -> {body}")
     return {}
 
 def fetch_keywords(movie_id: int, session: requests.Session) -> str | None:
     r = _get_with_retry(session, KEYWORDS_URL.format(movie_id=movie_id), params={"api_key": API_KEY})
-    if r.status_code == 200:
+    if r and r.status_code == 200:
         keywords = r.json().get('keywords', [])
         return join_unique([kw.get('name') for kw in keywords])
     return None
-
 
 def fetch_providers(movie_id: int, country: str = COUNTRY, session: requests.Session | None = None):
     own_session = False
@@ -158,7 +171,7 @@ def fetch_providers(movie_id: int, country: str = COUNTRY, session: requests.Ses
         own_session = True
     try:
         r = _get_with_retry(session, PROVIDERS_URL.format(movie_id=movie_id), params={"api_key": API_KEY})
-        if r.status_code != 200:
+        if not (r and r.status_code == 200):
             return {"flatrate": [], "rent": [], "buy": [], "link": None}
         data = r.json().get("results", {})
         region = data.get(country, {})
@@ -172,7 +185,6 @@ def fetch_providers(movie_id: int, country: str = COUNTRY, session: requests.Ses
         if own_session:
             session.close()
 
-
 # =========================
 # Scraping
 # =========================
@@ -183,8 +195,9 @@ def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
         # Première requête pour connaître total_pages
         params = {"api_key": API_KEY, "page": 1, "with_genres": genre_id, "language": LANG}
         r = _get_with_retry(session, DISCOVER_URL, params=params)
-        if r.status_code != 200:
-            print(f"❌ discover {genre_name} (p1) : {r.status_code} -> {r.text[:200]}")
+        if not (r and r.status_code == 200):
+            body = r.text[:200] if r and hasattr(r, "text") else ""
+            print(f"❌ discover {genre_name} (p1) : {getattr(r, 'status_code', '?')} -> {body}")
             return all_movies
 
         data = r.json()
@@ -192,11 +205,10 @@ def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
 
         with tqdm(total=total_pages, desc=f"🎬 {genre_name}", unit="page", dynamic_ncols=True, leave=False) as pbar:
             while page <= total_pages:
-                # dans la boucle while page <= total_pages:
                 params["page"] = page
-                r = _get_with_retry(session, DISCOVER_URL, params=params) 
-                if r.status_code != 200:
-                    print(f"⚠️ discover {genre_name}, page {page}: {r.status_code}")
+                r = _get_with_retry(session, DISCOVER_URL, params=params)
+                if not (r and r.status_code == 200):
+                    print(f"⚠️ discover {genre_name}, page {page}: {getattr(r, 'status_code', '?')}")
                     break
 
                 data = r.json()
@@ -204,7 +216,7 @@ def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
                     mid = movie.get('id')
                     release_year = safe_year(movie.get('release_date'))
                     poster_path = movie.get('poster_path')
-                    keywords = fetch_keywords(mid, session)
+                    keywords = fetch_keywords(mid, session) if mid else None
 
                     all_movies.append({
                         'movie_id': mid,
@@ -243,11 +255,10 @@ def scrape_all_genres() -> pd.DataFrame:
                 if t:
                     vals.add(t)
         return "|".join(sorted(vals)) if vals else None
-    
-    # S’assurer que la colonne 'genres' existe avant le groupby
+
     if "genres" not in df.columns:
         df["genres"] = None
-    
+
     agg = {
         "title": "first",
         "original_title": "first",
@@ -261,10 +272,9 @@ def scrape_all_genres() -> pd.DataFrame:
         "poster_url": lambda s: next((x for x in s if x), None),
         "key_words": lambda s: join_unique([w for x in s.dropna().astype(str) for w in x.split(",")]),
     }
-    
+
     df_merged = df.groupby("movie_id", as_index=False).agg(agg)
     return df_merged
-
 
 # =========================
 # Sauvegarde NON destructrice + providers
@@ -319,12 +329,12 @@ def upsert_movies(df: pd.DataFrame, engine):
             'original_title': String(255),
             'release_year': Integer(),
             'genres': String(255),
-            'synopsis': Text,
-            'rating': Float,
+            'synopsis': Text(),
+            'rating': Float(),
             'vote_count': Integer(),
             'original_language': String(10),
             'poster_url': String(255),
-            'key_words': Text,
+            'key_words': Text(),
             'platforms_flatrate': String(1024),
             'platforms_rent': String(1024),
             'platforms_buy': String(1024),
@@ -370,8 +380,9 @@ def upsert_movies(df: pd.DataFrame, engine):
 # Main
 # =========================
 if __name__ == "__main__":
-    if not API_KEY or not API_KEY.strip():
+    if not API_KEY.strip():
         raise SystemExit("⚠️ Configure TMDB_API_KEY (env/.env).")
+
     ensure_schema(engine)
 
     print(f"📥 Scraping TMDB (lang={LANG}) ...")
@@ -389,7 +400,3 @@ if __name__ == "__main__":
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM movies")).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
-
-
-
-
