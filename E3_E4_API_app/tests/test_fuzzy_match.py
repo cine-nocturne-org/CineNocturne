@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Mock propre de mlflow + mlflow.tracking AVANT d'importer l'API
+# --- Mock mlflow avant d'importer l'API ---
 sys.modules['mlflow'] = MagicMock()
 tracking_mock = MagicMock()
 tracking_mock.MlflowClient = MagicMock()
@@ -28,10 +28,12 @@ def get_auth_headers():
         return {"Authorization": f"Bearer {token}"}
     raise ValueError("Aucun identifiant ou token fourni dans les variables d'environnement")
 
-# --- fakes DB (inchangé) ---
+# --- Fakes DB ---
 class _FakeResult:
     def __init__(self, rows): self._rows = rows
     def fetchall(self): return self._rows
+    # compat fetchone/scalar si nécessaire ailleurs
+    def fetchone(self): return self._rows[0] if self._rows else None
 
 class _FakeConn:
     def __init__(self, rows): self._rows = rows
@@ -42,16 +44,23 @@ class _FakeConn:
 class _FakeEngine:
     def __init__(self, rows): self._rows = rows
     def connect(self): return _FakeConn(self._rows)
+    def begin(self): return _FakeConn(self._rows)
 
+# --- Tests ---
 def test_fuzzy_match_found_db_only(monkeypatch):
+    # tuples (movie_id, title) renvoyés par la "BDD"
     rows = [(1, "Zombieland"), (2, "Zombiever"), (3, "Inside Out")]
-    monkeypatch.setattr(api_movie_v2, "engine", _FakeEngine(rows))
+    # IMPORTANT : patcher l'engine utilisé par get_engine()
+    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine(rows))
+
     r = client.get("/fuzzy_match/Zombieland", headers=get_auth_headers())
     assert r.status_code == 200
     data = r.json()
     assert any(m["title"] == "Zombieland" and m["movie_id"] == 1 for m in data["matches"])
 
 def test_fuzzy_match_not_found_db_only(monkeypatch):
-    monkeypatch.setattr(api_movie_v2, "engine", _FakeEngine([]))
+    # aucune ligne -> endpoint doit renvoyer 404
+    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine([]))
+
     r = client.get("/fuzzy_match/DoesNotExist", headers=get_auth_headers())
     assert r.status_code == 404
