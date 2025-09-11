@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 
 # ---------- mocks AVANT d'importer l'API ----------
-# Évite FileNotFoundError sur les artefacts joblib
+# Évite les loads d'artefacts au module import
 joblib_mock = MagicMock()
 joblib_mock.load = MagicMock(return_value=MagicMock())
 sys.modules['joblib'] = joblib_mock
@@ -51,8 +51,8 @@ class _FakeEngine:
 # --- tests ---
 def test_fuzzy_match_found_db_only(monkeypatch):
     rows = [(1, "Zombieland"), (2, "Zombiever"), (3, "Inside Out")]
-    # Patch la fabrique d'engine utilisée par l'endpoint
-    monkeypatch.setattr(api_movie_v2, "get_engine", lambda: _FakeEngine(rows))
+    # Patch direct du moteur utilisé par l'API
+    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine(rows))
 
     r = client.get("/fuzzy_match/Zombieland", headers=get_auth_headers())
     assert r.status_code == 200
@@ -60,6 +60,6 @@ def test_fuzzy_match_found_db_only(monkeypatch):
     assert any(m["title"] == "Zombieland" and m["movie_id"] == 1 for m in data["matches"])
 
 def test_fuzzy_match_not_found_db_only(monkeypatch):
-    monkeypatch.setattr(api_movie_v2, "get_engine", lambda: _FakeEngine([]))
+    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine([]))
     r = client.get("/fuzzy_match/DoesNotExist", headers=get_auth_headers())
     assert r.status_code == 404
