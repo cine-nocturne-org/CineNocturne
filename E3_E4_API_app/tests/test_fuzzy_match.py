@@ -3,7 +3,7 @@ import sys
 import base64
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # ---------- mocks AVANT d'importer l'API ----------
 # Évite les loads d'artefacts au module import
@@ -32,34 +32,32 @@ def get_auth_headers():
         return {"Authorization": f"Bearer {token}"}
     raise ValueError("Aucun identifiant ou token fourni dans les variables d'environnement")
 
-# --- fakes DB minimalistes ---
-class _FakeResult:
-    def __init__(self, rows): self._rows = rows
-    def fetchall(self): return self._rows
+@patch("api_movie_v2.engine.connect")
+def test_fuzzy_match_found_db_only(mock_connect):
+    # Mock du context manager: with engine.connect() as conn:
+    mock_conn = MagicMock()
+    mock_connect.return_value.__enter__.return_value = mock_conn
 
-class _FakeConn:
-    def __init__(self, rows): self._rows = rows
-    def __enter__(self): return self
-    def __exit__(self, *a): pass
-    def execute(self, *a, **k): return _FakeResult(self._rows)
-
-class _FakeEngine:
-    def __init__(self, rows): self._rows = rows
-    def connect(self): return _FakeConn(self._rows)
-    def begin(self): return _FakeConn(self._rows)
-
-# --- tests ---
-def test_fuzzy_match_found_db_only(monkeypatch):
+    # Première requête FULLTEXT renvoie des lignes (movie_id, title)
     rows = [(1, "Zombieland"), (2, "Zombiever"), (3, "Inside Out")]
-    # Patch direct du moteur utilisé par l'API
-    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine(rows))
+    mock_result = MagicMock()
+    mock_result.fetchall.return_value = rows
+    mock_conn.execute.return_value = mock_result
 
     r = client.get("/fuzzy_match/Zombieland", headers=get_auth_headers())
     assert r.status_code == 200
     data = r.json()
     assert any(m["title"] == "Zombieland" and m["movie_id"] == 1 for m in data["matches"])
 
-def test_fuzzy_match_not_found_db_only(monkeypatch):
-    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine([]))
+@patch("api_movie_v2.engine.connect")
+def test_fuzzy_match_not_found_db_only(mock_connect):
+    mock_conn = MagicMock()
+    mock_connect.return_value.__enter__.return_value = mock_conn
+
+    # Aucune des requêtes ne trouve de lignes => fetchall() vide
+    mock_result = MagicMock()
+    mock_result.fetchall.return_value = []
+    mock_conn.execute.return_value = mock_result
+
     r = client.get("/fuzzy_match/DoesNotExist", headers=get_auth_headers())
     assert r.status_code == 404
