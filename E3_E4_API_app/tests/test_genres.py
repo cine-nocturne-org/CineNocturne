@@ -1,46 +1,49 @@
-import pytest
+import os
+import base64
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
-from api_movie_v2 import app, USERNAME, PASSWORD
-import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
-client = TestClient(app)
+import api_movie_v2  # après load_dotenv
+client = TestClient(api_movie_v2.app)
 
 def get_auth_headers():
-    import base64
-    # Essayer Basic Auth
     username = os.getenv("API_USERNAME")
     password = os.getenv("API_PASSWORD")
     if username and password:
-        credentials = f"{username}:{password}"
-        b64_credentials = base64.b64encode(credentials.encode()).decode()
-        return {"Authorization": f"Basic {b64_credentials}"}
-    
-    # Sinon, essayer Bearer token
+        b64 = base64.b64encode(f"{username}:{password}".encode()).decode()
+        return {"Authorization": f"Basic {b64}"}
     token = os.getenv("API_TOKEN")
     if token:
         return {"Authorization": f"Bearer {token}"}
-    
     raise ValueError("Aucun identifiant ou token fourni dans les variables d'environnement")
 
-@patch("api_movie_v2.engine")
-def test_get_unique_genres(mock_engine):
-    # Mock de la connexion et du fetch
-    mock_conn = mock_engine.connect.return_value.__enter__.return_value
+@patch("api_movie_v2.get_engine")
+def test_get_unique_genres(mock_get_engine):
+    # -- fabrique un faux engine/connexion/context manager
+    mock_engine = MagicMock()
+    mock_conn_cm = mock_engine.connect.return_value
+    mock_conn = mock_conn_cm.__enter__.return_value
+
+    # la requête SELECT genres FROM movies renverra ces lignes
+    # (on couvre la séparation par virgule et par pipe)
+    mock_rows = [("Action,Comédie",), ("Horreur|Thriller",), ("  Drame  ",)]
     mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [("Action,Comédie",)]
+    mock_cursor.fetchall.return_value = mock_rows
     mock_conn.execute.return_value = mock_cursor
 
-    response = client.get("/genres/", headers=get_auth_headers())
-    assert response.status_code == 200
-    data = response.json()
-    # On vérifie que la réponse contient bien les genres séparés
+    mock_get_engine.return_value = mock_engine
+
+    # --- appel endpoint
+    resp = client.get("/genres/", headers=get_auth_headers())
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # --- vérifications : les genres doivent être séparés/nettoyés
     assert "Action" in data
-    assert "Comédie" in data
-
-
-
-
-
+    assert "Comédie" in data   # accent conservé car l'API ne normalise pas ici
+    assert "Horreur" in data
+    assert "Thriller" in data
+    assert "Drame" in data
