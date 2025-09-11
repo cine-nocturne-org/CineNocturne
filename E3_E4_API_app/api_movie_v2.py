@@ -60,7 +60,7 @@ mlflow.set_experiment("louve_movies_monitoring")
 # 🗄️ Base de données
 # ======================
 DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # Crée les tables si absentes
 with engine.begin() as conn:
@@ -87,22 +87,6 @@ with engine.begin() as conn:
             rating FLOAT
         )
     """))
-
-    # FULLTEXT index pour accélérer /fuzzy_match
-with engine.begin() as conn:
-    try:
-        has_idx = conn.execute(text("""
-            SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'movies'
-              AND INDEX_NAME = 'idx_movies_title_fulltext'
-        """)).scalar()
-        if not has_idx:
-            conn.execute(text("CREATE FULLTEXT INDEX idx_movies_title_fulltext ON movies(title)"))
-    except SQLAlchemyError:
-        # Pas bloquant : on laissera le fallback LIKE fonctionner
-        pass
-
 
 # ======================
 # 🔒 Auth (Basic ou Bearer)
@@ -141,11 +125,90 @@ nn_full = joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"))
 svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
 tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
 
+def ensure_column_exists(table: str, column: str, coldef: str):
+    """Crée la colonne si absente (idempotent)."""
+    with engine.begin() as conn:
+        exists = conn.execute(text("""
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = :table
+              AND COLUMN_NAME = :column
+        """), {"table": table, "column": column}).scalar()
+        if not exists:
+            conn.execute(text(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {coldef}"))
+
+def ensure_movies_schema():
+    """Crée/ajoute sans casser: colonnes requises + index FULLTEXT."""
+    required_cols = {
+        "title": "VARCHAR(255)",
+        "original_title": "VARCHAR(255)",
+        "release_year": "INT",
+        "genres": "VARCHAR(255)",
+        "synopsis": "TEXT",
+        "rating": "FLOAT",
+        "vote_count": "INT",
+        "original_language": "VARCHAR(10)",
+        "poster_url": "VARCHAR(255)",
+        "key_words": "TEXT",
+        "user_rating": "FLOAT",
+        "platforms_flatrate": "VARCHAR(1024)",
+        "platforms_rent": "VARCHAR(1024)",
+        "platforms_buy": "VARCHAR(1024)",
+        "platform_link": "VARCHAR(512)",
+    }
+
+    with engine.begin() as conn:
+        # crée la table si absente (squelette minimal)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS movies (
+                movie_id INT PRIMARY KEY
+            ) ENGINE=InnoDB
+        """))
+
+        # colonnes existantes
+        existing = conn.execute(text("""
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies'
+        """)).fetchall()
+        existing_cols = {r[0] for r in existing}
+
+        # ajouter manquantes
+        for col, ddl in required_cols.items():
+            if col not in existing_cols:
+                conn.execute(text(f"ALTER TABLE movies ADD COLUMN `{col}` {ddl}"))
+
+        # FULLTEXT (sur title)
+        has_idx = conn.execute(text("""
+            SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'movies'
+              AND INDEX_NAME = 'idx_movies_title_fulltext'
+        """)).scalar()
+        if not has_idx:
+            try:
+                conn.execute(text("CREATE FULLTEXT INDEX idx_movies_title_fulltext ON movies(title)"))
+            except SQLAlchemyError:
+                pass  # non bloquant (selon version/permissions)
+
+
+# --- migrations sûres avant de charger en mémoire ---
+ensure_movies_schema()
+ensure_column_exists("movies", "user_rating", "FLOAT")  # (redondant mais OK)
+
 # Films depuis BDD (mémoire)
 with engine.connect() as conn:
     rows = conn.execute(
-        text("SELECT movie_id, title, genres, release_year, synopsis, poster_url, rating, user_rating FROM movies")
+        text("""
+            SELECT movie_id, title, genres, release_year, synopsis, poster_url, rating, user_rating
+            FROM movies
+        """)
     ).mappings().all()
+    
+if not rows:
+    rows = []
+
 
 movies = []
 titles = []
@@ -893,6 +956,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
