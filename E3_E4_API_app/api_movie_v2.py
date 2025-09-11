@@ -1,7 +1,7 @@
 # api.py
 # ============================================================
 # 🎬 Louve Movies API — Recommandations + Monitoring MLflow
-# Corrigé : TF-IDF recalculée côté API avec le vectorizer du train
+# Edition "low-RAM" Render : lazy-loading + mmap + MLflow on-demand
 # ============================================================
 
 from fastapi import FastAPI, HTTPException, Depends, Query
@@ -10,25 +10,22 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import pandas as pd
 import numpy as np
-import joblib
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.neighbors import NearestNeighbors
 import unicodedata
 import random
 import io
 from datetime import datetime
 import os
 import csv
-import mlflow
-from mlflow.tracking import MlflowClient
-from dotenv import load_dotenv
 import logging
 import tempfile
 import json
 import re
+
+from dotenv import load_dotenv
+load_dotenv()
 
 # -------- Config locale du projet --------
 # (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
@@ -38,7 +35,7 @@ from E3_E4_API_app import config
 # 🔧 Logging
 # ======================
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger("louve_api")
@@ -46,23 +43,49 @@ logger = logging.getLogger("louve_api")
 # ======================
 # 🚀 FastAPI
 # ======================
-app = FastAPI(title="🎬 Louve Movies API")
+app = FastAPI(title="🎬 Louve Movies API (Render-friendly)")
 
 # ======================
-# 🧪 MLflow
+# 🔒 Auth (Basic ou Bearer)
 # ======================
-mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
-mlflow.set_experiment("louve_movies_monitoring")
+USERNAME: str = os.getenv("API_USERNAME")
+PASSWORD: str = os.getenv("API_PASSWORD")
+API_TOKEN: str = os.getenv("API_TOKEN")
+
+security_basic = HTTPBasic(auto_error=False)
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+def verify_credentials(
+    credentials: HTTPBasicCredentials = Depends(security_basic),
+    api_key: str = Depends(api_key_header)
+):
+    # Mode 1 : Basic Auth
+    if credentials and USERNAME and PASSWORD:
+        if credentials.username == USERNAME and credentials.password == PASSWORD:
+            return True
+    # Mode 2 : Bearer Token
+    if api_key and API_TOKEN and api_key == f"Bearer {API_TOKEN}":
+        return True
+    raise HTTPException(status_code=401, detail="Non autorisé")
 
 # ======================
-# 🗄️ Base de données
+# 🗄️ Base de données (lazy)
 # ======================
-DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+DATABASE_URL = os.getenv(
+    "MYSQL_URL",
+    "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
+)
+
+def get_engine():
+    """Singleton SQLAlchemy engine (lazy)."""
+    if STATE["engine"] is None:
+        STATE["engine"] = create_engine(DATABASE_URL, pool_pre_ping=True)
+    return STATE["engine"]
 
 def ensure_column_exists(table: str, column: str, coldef: str):
     """Crée la colonne si absente (idempotent)."""
-    with engine.begin() as conn:
+    eng = get_engine()
+    with eng.begin() as conn:
         exists = conn.execute(text("""
             SELECT COUNT(*)
             FROM INFORMATION_SCHEMA.COLUMNS
@@ -93,7 +116,8 @@ def ensure_movies_schema():
         "platform_link": "VARCHAR(512)",
     }
 
-    with engine.begin() as conn:
+    eng = get_engine()
+    with eng.begin() as conn:
         # crée la table si absente (squelette minimal)
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS movies (
@@ -125,10 +149,11 @@ def ensure_movies_schema():
             try:
                 conn.execute(text("CREATE FULLTEXT INDEX idx_movies_title_fulltext ON movies(title)"))
             except SQLAlchemyError:
-                pass  # non bloquant (selon version/permissions)
+                pass  # non bloquant
 
 def ensure_feedback_and_ratings_tables():
-    with engine.begin() as conn:
+    eng = get_engine()
+    with eng.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS feedback (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -151,35 +176,6 @@ def ensure_feedback_and_ratings_tables():
                 rating FLOAT
             ) ENGINE=InnoDB
         """))
-
-# --- migrations sûres avant de charger en mémoire ---
-ensure_movies_schema()
-ensure_column_exists("movies", "user_rating", "FLOAT")
-ensure_feedback_and_ratings_tables()  # ← AJOUTE ÇA
-
-
-# ======================
-# 🔒 Auth (Basic ou Bearer)
-# ======================
-load_dotenv()
-USERNAME: str = os.getenv("API_USERNAME")
-PASSWORD: str = os.getenv("API_PASSWORD")
-API_TOKEN: str = os.getenv("API_TOKEN")
-
-security_basic = HTTPBasic(auto_error=False)
-api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
-
-def verify_credentials(
-    credentials: HTTPBasicCredentials = Depends(security_basic),
-    api_key: str = Depends(api_key_header)
-):
-    # Mode 1 : Basic Auth
-    if credentials and credentials.username == USERNAME and credentials.password == PASSWORD:
-        return True
-    # Mode 2 : Bearer Token
-    if api_key and api_key == f"Bearer {API_TOKEN}":
-        return True
-    raise HTTPException(status_code=401, detail="Non autorisé")
 
 # ======================
 # 🧠 Helpers
@@ -213,8 +209,165 @@ def safe_mlb_transform(_mlb, genre_lists):
         cleaned = [[g for g in gs if g in known] for gs in genre_lists]
         return _mlb.transform(cleaned)
 
+# ======================
+# 🧳 Lazy global state
+# ======================
+STATE: Dict[str, Any] = {
+    "engine": None,
+
+    # artefacts ML
+    "vectorizer": None,
+    "svd": None,
+    "xgb": None,
+    "mlb": None,
+    "scaler_year": None,
+
+    # données catalogue
+    "movies": None,
+    "titles": None,
+    "years": None,
+    "genres_list_all": None,
+    "movies_dict": None,
+
+    # matrices dérivées
+    "tfidf_matrix": None,
+    "svd_vecs": None,
+    "genres_encoded_matrix": None,
+    "years_scaled": None,
+    "nn": None,
+
+    # drapeaux
+    "catalog_ready": False,
+    "models_ready": False,
+}
+
+MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "model"))
+
+def load_models():
+    """Charge les modèles/transformers une seule fois (mmap)."""
+    if STATE["models_ready"]:
+        return
+    import joblib  # import tardif
+    logger.info("Loading models from %s ...", MODEL_DIR)
+    STATE["vectorizer"]   = joblib.load(os.path.join(MODEL_DIR, "reco_vectorizer.joblib"), mmap_mode="r")
+    STATE["svd"]          = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"), mmap_mode="r")
+    STATE["xgb"]          = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"), mmap_mode="r")
+    STATE["mlb"]          = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"), mmap_mode="r")
+    STATE["scaler_year"]  = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"), mmap_mode="r")
+    STATE["models_ready"] = True
+    logger.info("Models loaded.")
+
+def build_catalog():
+    """Recharge le catalogue depuis MySQL et recalcule les matrices (lazy)."""
+    load_models()  # s'assure des artefacts
+    ensure_movies_schema()
+    ensure_feedback_and_ratings_tables()
+
+    eng = get_engine()
+    logger.info("Loading movies from DB ...")
+    with eng.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT movie_id, title, genres, release_year, synopsis, poster_url, rating, user_rating
+                FROM movies
+                WHERE synopsis IS NOT NULL
+            """)
+        ).mappings().all()
+
+    rows = rows or []
+    movies = [dict(r) for r in rows]
+    titles = [r["title"] for r in rows]
+    years  = [r["release_year"] if r["release_year"] is not None else 2000 for r in rows]
+    genres_list_all = [_split_genres(r["genres"]) for r in rows]
+    syn_clean = [_preprocess_text(r["synopsis"]) for r in rows]
+
+    if not movies:
+        # Vide : reset tout proprement
+        STATE.update({
+            "movies": [], "titles": [], "years": [],
+            "genres_list_all": [], "movies_dict": {},
+            "tfidf_matrix": None, "svd_vecs": None,
+            "genres_encoded_matrix": None, "years_scaled": None, "nn": None,
+            "catalog_ready": True,
+        })
+        logger.warning("Catalogue vide.")
+        return
+
+    # TF-IDF (vectorizer du train), SVD, encodages
+    vect = STATE["vectorizer"]
+    svd  = STATE["svd"]
+    mlb  = STATE["mlb"]
+    scaler = STATE["scaler_year"]
+
+    logger.info("Vectorizing + SVD + encodings ...")
+    tfidf_matrix = vect.transform(syn_clean)                 # sparse
+    svd_vecs = svd.transform(tfidf_matrix)                  # dense (compact)
+    genres_encoded_matrix = safe_mlb_transform(mlb, genres_list_all)
+    years_scaled = scaler.transform(np.array(years).reshape(-1, 1))
+
+    # kNN sur TF-IDF
+    from sklearn.neighbors import NearestNeighbors
+    nn = NearestNeighbors(metric="cosine", algorithm="brute")
+    nn.fit(tfidf_matrix)
+
+    # Tronquer à la taille min commune (garde-fous)
+    n = min(
+        len(titles),
+        getattr(tfidf_matrix, "shape", [0])[0],
+        getattr(genres_encoded_matrix, "shape", [0])[0],
+        getattr(years_scaled, "shape", [0])[0],
+        getattr(svd_vecs, "shape", [0])[0],
+    )
+    if n == 0:
+        STATE.update({
+            "movies": [], "titles": [], "years": [],
+            "genres_list_all": [], "movies_dict": {},
+            "tfidf_matrix": None, "svd_vecs": None,
+            "genres_encoded_matrix": None, "years_scaled": None, "nn": None,
+            "catalog_ready": True,
+        })
+        logger.error("Catalogue/artefacts incompatibles (n=0).")
+        return
+
+    # Applique la troncature
+    movies = movies[:n]
+    titles = titles[:n]
+    genres_list_all = genres_list_all[:n]
+    years  = years[:n]
+    tfidf_matrix = tfidf_matrix[:n]
+    genres_encoded_matrix = genres_encoded_matrix[:n]
+    years_scaled = years_scaled[:n]
+    svd_vecs = svd_vecs[:n]
+
+    STATE.update({
+        "movies": movies,
+        "titles": titles,
+        "years": years,
+        "genres_list_all": genres_list_all,
+        "movies_dict": {m["title"]: m for m in movies},
+        "tfidf_matrix": tfidf_matrix,
+        "svd_vecs": svd_vecs,
+        "genres_encoded_matrix": genres_encoded_matrix,
+        "years_scaled": years_scaled,
+        "nn": nn,
+        "catalog_ready": True,
+    })
+    logger.info("Catalog ready. %d titles.", n)
+
+def get_catalog_ready():
+    if not STATE["catalog_ready"]:
+        build_catalog()
+    return STATE
+
+# ======================
+# 🧪 MLflow (on-demand)
+# ======================
 def mlflow_start_inference_run(input_title: str, top_k: int):
+    """Crée un run MLflow uniquement si possible, sinon DummyRun."""
     try:
+        import mlflow
+        from mlflow.tracking import MlflowClient  # noqa: F401
+        mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
         mlflow.set_experiment("louve_movies_monitoring")
         if mlflow.active_run() is not None:
             mlflow.end_run()
@@ -228,90 +381,12 @@ def mlflow_start_inference_run(input_title: str, top_k: int):
         return DummyRun()
 
 # ======================
-# 🤖 Chargement modèles & données (CORRIGÉ)
-# ======================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "model")
-
-# Modèles / objets (du train)
-xgb_model   = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
-vectorizer  = joblib.load(os.path.join(MODEL_DIR, "reco_vectorizer.joblib"))  # ✅ nouveau
-mlb         = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
-scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
-svd_full    = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
-# ❌ on ne charge plus tfidf_matrix_full.joblib ni nn_full.joblib
-
-# Films depuis BDD (mémoire)
-with engine.connect() as conn:
-    rows = conn.execute(
-        text("""
-            SELECT movie_id, title, genres, release_year, synopsis, poster_url, rating, user_rating
-            FROM movies
-            WHERE synopsis IS NOT NULL
-        """)
-    ).mappings().all()
-
-rows = rows or []
-
-movies = [dict(r) for r in rows]
-titles = [r["title"] for r in rows]
-years  = [r["release_year"] if r["release_year"] is not None else 2000 for r in rows]
-genres_list_all = [_split_genres(r["genres"]) for r in rows]
-syn_clean = [_preprocess_text(r["synopsis"]) for r in rows]
-
-# --- TF-IDF recalculée sur la BDD actuelle avec le vectorizer du train ---
-tfidf_matrix = vectorizer.transform(syn_clean)
-
-# --- SVD -> vecteurs compacts (mêmes composantes qu’à l’entraînement) ---
-svd_vecs = svd_full.transform(tfidf_matrix)
-
-# --- Encodages genres / années ---
-genres_encoded_matrix = safe_mlb_transform(mlb, genres_list_all)
-years_scaled = scaler_year.transform(np.array(years).reshape(-1, 1))
-
-# --- kNN recalculé (aligné sur la TF-IDF actuelle) ---
-nn = NearestNeighbors(metric="cosine", algorithm="brute")
-nn.fit(tfidf_matrix)
-
-# --- Garde-fous d’alignement : on tronque toutes les structures au minimum commun ---
-n = min(
-    len(titles),
-    getattr(tfidf_matrix, "shape", [0])[0],
-    getattr(genres_encoded_matrix, "shape", [0])[0],
-    getattr(years_scaled, "shape", [0])[0],
-    getattr(svd_vecs, "shape", [0])[0],
-)
-
-if n == 0:
-    logger.error("Catalogue vide ou artefacts incompatibles (n=0).")
-    titles = []
-    movies = []
-    genres_list_all = []
-    years = []
-else:
-    if len(titles) > n:
-        titles = titles[:n]
-        movies = movies[:n]
-        genres_list_all = genres_list_all[:n]
-        years = years[:n]
-    if getattr(tfidf_matrix, "shape", [0])[0] > n:
-        tfidf_matrix = tfidf_matrix[:n]
-    if getattr(genres_encoded_matrix, "shape", [0])[0] > n:
-        genres_encoded_matrix = genres_encoded_matrix[:n]
-    if getattr(years_scaled, "shape", [0])[0] > n:
-        years_scaled = years_scaled[:n]
-    if getattr(svd_vecs, "shape", [0])[0] > n:
-        svd_vecs = svd_vecs[:n]
-
-movies_dict = {m["title"]: m for m in movies}
-
-# ======================
 # 📦 Pydantic Models
 # ======================
 class RatingUpdate(BaseModel):
     title: str
     rating: float
-    user_name: Optional[str] = None  # NEW: identifiant de l'utilisateur qui note
+    user_name: Optional[str] = None  # identifiant utilisateur
 
 class FeedbackPayload(BaseModel):
     run_id: str
@@ -326,9 +401,22 @@ class FeedbackPayload(BaseModel):
 # 🔧 Endpoints
 # ======================
 
+@app.get("/health")
+def health():
+    """Ping ultra-léger pour Render port binding."""
+    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+
+# -- Recharger manuellement le catalogue (protégé)
+@app.post("/_reload_catalog", include_in_schema=False, dependencies=[Depends(verify_credentials)])
+def _reload_catalog():
+    STATE["catalog_ready"] = False
+    build_catalog()
+    return {"message": "catalog reloaded", "n_titles": len(STATE.get("titles") or [])}
+
 # -- Mettre à jour la note utilisateur d’un film (+ historisation)
 @app.post("/update_rating", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def update_rating(payload: RatingUpdate):
+    state = get_catalog_ready()
     title = payload.title
     rating = payload.rating
     user_name = payload.user_name or "anonymous"
@@ -337,15 +425,9 @@ async def update_rating(payload: RatingUpdate):
         raise HTTPException(status_code=400, detail="La note doit être comprise entre 0 et 10.")
 
     try:
-        with engine.begin() as conn:
-            # S'assurer de l'existence de la colonne user_rating
-            check_col = conn.execute(text("""
-                SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies' AND COLUMN_NAME = 'user_rating'
-            """)).fetchone()
-            if not check_col:
-                conn.execute(text("ALTER TABLE movies ADD COLUMN user_rating FLOAT"))
-
+        eng = get_engine()
+        with eng.begin() as conn:
+            ensure_column_exists("movies", "user_rating", "FLOAT")
             result = conn.execute(
                 text("UPDATE movies SET user_rating = :rating WHERE title = :title"),
                 {"rating": rating, "title": title}
@@ -362,9 +444,9 @@ async def update_rating(payload: RatingUpdate):
                 {"u": user_name, "t": title, "r": float(rating)}
             )
 
-        # NEW: refresh cache en mémoire pour les recos (après commit)
-        if title in movies_dict:
-            movies_dict[title]["user_rating"] = float(rating)
+        # refresh cache léger
+        if state["movies_dict"] and title in state["movies_dict"]:
+            state["movies_dict"][title]["user_rating"] = float(rating)
 
         return {"message": f"La note {rating} a été enregistrée pour le film '{title}'."}
 
@@ -378,6 +460,9 @@ async def update_rating(payload: RatingUpdate):
 # -- Recommandations XGB personnalisées (publique pour l’UI)
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
+    state = get_catalog_ready()
+
+    titles = state["titles"] or []
     if not titles:
         raise HTTPException(status_code=500, detail="Catalogue indisponible.")
 
@@ -389,6 +474,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
     # 2) Démarrer un run MLflow (en mode dégradé si indisponible)
     with mlflow_start_inference_run(input_title=title, top_k=top_k) as run:
+        # run_id safe
         try:
             info = getattr(run, "info", None)
             rid = (info.get("run_id") if isinstance(info, dict) else getattr(info, "run_id", None))
@@ -398,41 +484,46 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         except Exception:
             run_id = ""
 
-        # Tags + paramètres de base (protégés)
+        # logging best effort
         try:
-            mlflow.set_tags({
-                "stage": "inference",
-                "component": "xgb_recommender",
-                "source": "api",
-            })
+            import mlflow
+            mlflow.set_tags({"stage": "inference", "component": "xgb_recommender", "source": "api"})
             mlflow.log_param("input_title", title)
             mlflow.log_param("top_k", int(top_k))
         except Exception:
             pass
 
-        # 3) Notes du film d'entrée
+        movies_dict = state["movies_dict"] or {}
         input_movie = movies_dict.get(title, {})
         input_user_rating = float(input_movie.get("user_rating") or 0.0)
         input_movie_rating = float(input_movie.get("rating") or 5.0)
         try:
+            import mlflow
             mlflow.log_metric("user_rating", input_user_rating)
             mlflow.log_metric("movie_rating", input_movie_rating)
         except Exception:
             pass
 
         # 4) Candidats par similarité TF-IDF + filtre genres
-        N = getattr(tfidf_matrix, "shape", [0])[0]
+        tfidf_matrix = state["tfidf_matrix"]
+        genres_list_all = state["genres_list_all"]
+        if tfidf_matrix is None:
+            raise HTTPException(status_code=500, detail="Matrice TF-IDF indisponible.")
+
+        N = tfidf_matrix.shape[0]
         if idx >= N:
             raise HTTPException(status_code=500, detail="Catalogue ML et BDD désalignés (TF-IDF).")
 
         chosen_genres = set(genres_list_all[idx])
         vec = tfidf_matrix[idx].reshape(1, -1)
+        from sklearn.metrics.pairwise import cosine_similarity
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
         cosine_sim[idx] = -1.0  # exclure le film lui-même
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
         candidate_indices = [i for i in candidate_indices if i < N and (chosen_genres & set(genres_list_all[i]))]
         try:
+            import mlflow
             mlflow.log_metric("n_candidates", int(len(candidate_indices)))
         except Exception:
             pass
@@ -441,12 +532,15 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             return {"run_id": run_id, "recommendations": []}
 
         # 5) Features pour XGB
+        svd_vecs = state["svd_vecs"]
+        genres_encoded_matrix = state["genres_encoded_matrix"]
+        years_scaled = state["years_scaled"]
+        nn = state["nn"]
+        xgb_model = state["xgb"]
+
         features_list, candidate_titles = [], []
         for i in candidate_indices:
-            # SVD déjà calculé et aligné
             svd_vec = svd_vecs[i].reshape(1, -1)
-
-            # distances kNN sur la matrice kNN recalc
             dists, _ = nn.kneighbors(tfidf_matrix[i], n_neighbors=6)
             sims = 1 - dists[0][1:] if dists.shape[1] > 1 else np.array([0.0])
 
@@ -461,6 +555,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
         if not features_list:
             try:
+                import mlflow
                 mlflow.log_metric("n_candidates", 0)
             except Exception:
                 pass
@@ -490,8 +585,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             )
             pred_label = int(final_score >= 0.5)
 
-            # Metrics par rang (protégées)
             try:
+                import mlflow
                 mlflow.log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
                 mlflow.log_metric("final_score", float(final_score), step=rank)
             except Exception:
@@ -517,13 +612,10 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             })
 
         try:
+            import mlflow
             mlflow.log_metric("max_pred_score", float(proba_scaled.max()))
             mlflow.log_metric("min_pred_score", float(proba_scaled.min()))
-        except Exception:
-            pass
-
-        # 8) Artifacts (format JSON + tableau) — best effort
-        try:
+            # Artifacts — best effort
             df_recos = pd.DataFrame(rows_for_table)
             if hasattr(mlflow, "log_table"):
                 mlflow.log_table(df_recos, artifact_file="recommendations.parquet")
@@ -542,8 +634,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 @app.post("/log_feedback", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def log_feedback(payload: FeedbackPayload):
     try:
-        # 1) Sauvegarder le feedback
-        with engine.begin() as conn:
+        eng = get_engine()
+        with eng.begin() as conn:
             conn.execute(text("""
                 INSERT INTO feedback (user_name, input_title, reco_title, pred_label, pred_score, liked, run_id)
                 VALUES (:u, :it, :rt, :pl, :ps, :lk, :rid)
@@ -557,7 +649,6 @@ async def log_feedback(payload: FeedbackPayload):
                 "rid": payload.run_id
             })
 
-            # 2) Recalcul accuracy online (sur ce run)
             row = conn.execute(text("""
                 SELECT SUM(CASE WHEN pred_label = liked THEN 1 ELSE 0 END) AS correct,
                        COUNT(*) AS total
@@ -568,8 +659,11 @@ async def log_feedback(payload: FeedbackPayload):
         correct, total = (row[0] or 0), (row[1] or 0)
         online_accuracy = float(correct) / float(total) if total > 0 else 0.0
 
-        # 3) Log sans rouvrir le run (évite "already active")
+        # Log MLflow via client on-demand (ne crée pas de run)
         try:
+            from mlflow.tracking import MlflowClient
+            import mlflow
+            mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
             client = MlflowClient()
             client.log_metric(run_id=payload.run_id, key="online_accuracy", value=online_accuracy, step=total)
             client.log_metric(run_id=payload.run_id, key="feedback_count", value=total, step=total)
@@ -596,7 +690,7 @@ async def fuzzy_match(
         raise HTTPException(status_code=400, detail="Titre vide.")
 
     # Normalisation & tokens
-    q_norm = normalize_text(q).replace("&", " and ")   
+    q_norm = normalize_text(q).replace("&", " and ")
     tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm) if t and t not in STOPWORDS]
     if not tokens:
         tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm)]
@@ -606,10 +700,11 @@ async def fuzzy_match(
         limit_sql = max(limit_sql, 800)
         score_cutoff = min(score_cutoff, 50)
 
-    # FULLTEXT en BOOLEAN MODE avec préfixes (+tok*)
+    # FULLTEXT BOOLEAN MODE avec préfixes (+tok*)
     bool_query = " ".join(f"+{t}*" for t in tokens if len(t) >= 2)
 
-    with engine.connect() as conn:
+    eng = get_engine()
+    with eng.connect() as conn:
         rows = []
 
         # 1) FULLTEXT BOOLEAN MODE
@@ -636,7 +731,7 @@ async def fuzzy_match(
             except SQLAlchemyError:
                 rows = []
 
-        # 3) LIKE "normalisé" (retire espaces/ponctuation, & -> and)
+        # 3) LIKE "normalisé"
         if not rows:
             norm_q = re.sub(r"[^a-z0-9]+", "", q_norm)
             try:
@@ -659,7 +754,7 @@ async def fuzzy_match(
             except SQLAlchemyError:
                 rows = []
 
-        # 4) LIKE souple avec jokers entre tokens: %hung%games%songbirds%
+        # 4) LIKE souple
         if not rows and tokens:
             like_chain = "%" + "%".join(tokens) + "%"
             try:
@@ -688,7 +783,6 @@ async def fuzzy_match(
         score_cutoff=int(score_cutoff)
     )
 
-    # Si peu de résultats, on complète via partial_ratio (plus permissif)
     if len(matches) < top_k:
         extra = process.extract(
             query=q,
@@ -697,7 +791,6 @@ async def fuzzy_match(
             limit=top_k * 3,
             score_cutoff=max(45, score_cutoff - 10)
         )
-        # fusion garde le meilleur score par titre
         best = {}
         for t, s, *_ in matches + extra:
             best[t] = max(best.get(t, 0), int(s))
@@ -705,7 +798,6 @@ async def fuzzy_match(
 
     out, seen = [], set()
     for item in matches:
-        # item = (title, score, idx) ou (title, score)
         t = item[0]
         s = int(item[1])
         if t in seen:
@@ -723,9 +815,10 @@ async def fuzzy_match(
 @app.get("/genres/", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def get_unique_genres():
     try:
+        eng = get_engine()
         query = "SELECT genres FROM movies"
         all_genres = set()
-        with engine.connect() as conn:
+        with eng.connect() as conn:
             result = conn.execute(text(query)).fetchall()
             for row in result:
                 raw = row[0] or ""
@@ -742,6 +835,7 @@ async def get_unique_genres():
 @app.get("/movie-details/{title}", dependencies=[Depends(verify_credentials)])
 async def get_movie_details(title: str):
     try:
+        eng = get_engine()
         query = """
         SELECT 
             m.movie_id,
@@ -767,7 +861,7 @@ async def get_movie_details(title: str):
         ON m.title = p.title
         WHERE LOWER(m.title) = LOWER(:title)
         """
-        with engine.connect() as conn:
+        with eng.connect() as conn:
             result = conn.execute(text(query), {"title": title}).fetchall()
 
         if not result:
@@ -805,12 +899,13 @@ PLATFORM_TABLES = {
 @app.get("/random_movies/", dependencies=[Depends(verify_credentials)])
 async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit: int = 10):
     try:
+        eng = get_engine()
         selected_platforms = [p.lower() for p in platforms if p.lower() in PLATFORM_TABLES]
         if not selected_platforms:
             raise HTTPException(status_code=400, detail="Aucune plateforme valide sélectionnée.")
 
         out = []
-        with engine.connect() as conn:
+        with eng.connect() as conn:
             for platform in selected_platforms:
                 query = f"""
                 SELECT m.title, m.synopsis, m.poster_url, m.genres, '{platform}' AS platform, m.release_year
@@ -832,7 +927,6 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
         if not out:
             raise HTTPException(status_code=404, detail="Aucun film trouvé pour ce genre et ces plateformes.")
 
-        # Echantillonner en évitant les entrées incomplètes
         filtered = [m for m in out if m.get("poster_url") and m.get("synopsis")]
         if not filtered:
             raise HTTPException(status_code=404, detail="Aucun film exploitable (poster/synopsis manquants).")
@@ -850,6 +944,7 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
 @app.get("/download-movie-details/", dependencies=[Depends(verify_credentials)])
 async def download_movie_details():
     try:
+        eng = get_engine()
         query = """
         SELECT 
             m.movie_id,
@@ -875,7 +970,7 @@ async def download_movie_details():
         ON m.title = p.title
         ORDER BY m.title;
         """
-        with engine.connect() as conn:
+        with eng.connect() as conn:
             result = conn.execute(text(query))
             rows = result.fetchall()
 
@@ -902,8 +997,8 @@ async def download_movie_details():
 @app.get("/user_stats/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def user_stats(user_name: str, limit_recent: int = 50):
     try:
-        # Vérifie que la table feedback existe
-        with engine.connect() as c:
+        eng = get_engine()
+        with eng.connect() as c:
             exists = c.execute(text("""
                 SELECT COUNT(*) 
                 FROM INFORMATION_SCHEMA.TABLES
@@ -912,7 +1007,6 @@ async def user_stats(user_name: str, limit_recent: int = 50):
             """)).scalar()
 
         if not exists:
-            # Si la table feedback n'existe pas encore → renvoie un squelette vide
             return {
                 "user": user_name,
                 "total": 0,
@@ -926,7 +1020,6 @@ async def user_stats(user_name: str, limit_recent: int = 50):
                 "recent": []
             }
 
-        # Si la table existe → récupère les stats
         query = """
         SELECT f.ts, f.input_title, f.reco_title, f.pred_label, f.pred_score, f.liked,
                m.genres, m.release_year
@@ -935,10 +1028,9 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         WHERE f.user_name = :u
         ORDER BY f.ts DESC
         """
-        with engine.connect() as conn:
+        with eng.connect() as conn:
             rows = conn.execute(text(query), {"u": user_name}).fetchall()
 
-        # Aucun feedback pour cet utilisateur → squelette vide
         if not rows:
             return {
                 "user": user_name,
@@ -953,13 +1045,12 @@ async def user_stats(user_name: str, limit_recent: int = 50):
                 "recent": []
             }
 
-        # -------------------------
-        # Analyse des feedbacks
-        # -------------------------
         cols = ["ts","input_title","reco_title","pred_label","pred_score","liked","genres","release_year"]
         df = pd.DataFrame(rows, columns=cols)
-        df["liked"] = df["liked"].astype(int)
-        df["pred_label"] = df["pred_label"].astype(int)
+        df["liked"] = pd.to_numeric(df["liked"], errors="coerce").fillna(0).astype(int)
+        df["pred_label"] = pd.to_numeric(df["pred_label"], errors="coerce").fillna(0).astype(int)
+        df["pred_score"] = pd.to_numeric(df["pred_score"], errors="coerce")
+        df["release_year"] = pd.to_numeric(df["release_year"], errors="coerce")
 
         n = len(df)
         likes = int((df["liked"] == 1).sum())
@@ -972,31 +1063,29 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         fp = int(((df["pred_label"] == 1) & (df["liked"] == 0)).sum())
         fn = int(((df["pred_label"] == 0) & (df["liked"] == 1)).sum())
 
-        # Genres préférés (likes)
         def split_genres(s):
             if not s:
                 return []
             parts = []
             for token in str(s).split("|"):
-                parts.extend([g.strip() for g in token.split(",")])
-            return [g for g in parts if g]
-
+                parts.extend([g.strip() for g in token.split(",") if g.strip()])
+            return parts
+        
         df["genres_list"] = df["genres"].apply(split_genres)
         expl = df.explode("genres_list")
+        
         if not expl.empty:
             likes_by_genre = expl.groupby("genres_list")["liked"].sum().sort_values(ascending=False)
             top_genres = [{"genre": k, "likes": int(v)} for k, v in likes_by_genre.head(10).items()]
         else:
             top_genres = []
-
-        # Likes par année
-        by_year = df.groupby("release_year")["liked"].sum().sort_index().reset_index()
+        
+        by_year_series = df.groupby("release_year")["liked"].sum().sort_index()
         by_year = [
-            {"year": int(y) if pd.notna(y) else None, "likes": int(v)}
-            for y, v in zip(by_year["release_year"], by_year["liked"])
+            {"year": int(y) if not pd.isna(y) else None, "likes": int(v)}
+            for y, v in by_year_series.items()
         ]
 
-        # Récents
         df_recent = df[["ts","reco_title","pred_score","pred_label","liked","genres","release_year"]].head(limit_recent).copy()
         df_recent["ts"] = df_recent["ts"].astype(str)
         recent = df_recent.to_dict(orient="records")
@@ -1019,11 +1108,11 @@ async def user_stats(user_name: str, limit_recent: int = 50):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
-# -- NEW: Historique des notes utilisateur (films notés via /update_rating)
+# -- Historique des notes utilisateur
 @app.get("/user_ratings/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def get_user_ratings(user_name: str, limit: int = 200):
     try:
+        eng = get_engine()
         query = """
         SELECT ur.ts, ur.title, ur.rating, m.genres, m.release_year, m.poster_url
         FROM user_ratings ur
@@ -1032,7 +1121,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         ORDER BY ur.ts DESC
         LIMIT :lim
         """
-        with engine.connect() as conn:
+        with eng.connect() as conn:
             rows = conn.execute(text(query), {"u": user_name, "lim": int(limit)}).mappings().all()
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
@@ -1042,14 +1131,15 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 @app.get("/_debug_catalog", include_in_schema=False)
 async def _debug_catalog():
     try:
+        state = get_catalog_ready()
+        tfidf = state["tfidf_matrix"]
         return {
-            "n_titles": len(titles),
-            "tfidf_rows": int(getattr(tfidf_matrix, "shape", [0])[0]),
-            "svd_rows": int(getattr(svd_vecs, "shape", [0])[0]),
-            "genres_rows": int(getattr(genres_encoded_matrix, "shape", [0])[0]),
-            "years_rows": int(getattr(years_scaled, "shape", [0])[0]),
-            "sample_titles": titles[:5],
+            "n_titles": len(state["titles"] or []),
+            "tfidf_rows": int(getattr(tfidf, "shape", [0])[0]) if tfidf is not None else 0,
+            "svd_rows": int((state["svd_vecs"] or np.zeros((0,))).shape[0]),
+            "genres_rows": int((state["genres_encoded_matrix"] or np.zeros((0,))).shape[0]),
+            "years_rows": int((state["years_scaled"] or np.zeros((0,))).shape[0]),
+            "sample_titles": (state["titles"] or [])[:5],
         }
     except Exception as e:
         return {"error": str(e)}
-
