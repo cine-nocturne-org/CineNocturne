@@ -127,9 +127,36 @@ def ensure_movies_schema():
             except SQLAlchemyError:
                 pass  # non bloquant (selon version/permissions)
 
+def ensure_feedback_and_ratings_tables():
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_name VARCHAR(255),
+                input_title VARCHAR(512),
+                reco_title VARCHAR(512),
+                pred_label TINYINT,
+                pred_score FLOAT,
+                liked TINYINT,
+                run_id VARCHAR(64)
+            ) ENGINE=InnoDB
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_ratings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_name VARCHAR(255),
+                title VARCHAR(512),
+                rating FLOAT
+            ) ENGINE=InnoDB
+        """))
+
 # --- migrations sûres avant de charger en mémoire ---
 ensure_movies_schema()
-ensure_column_exists("movies", "user_rating", "FLOAT")  # (redondant mais OK)
+ensure_column_exists("movies", "user_rating", "FLOAT")
+ensure_feedback_and_ratings_tables()  # ← AJOUTE ÇA
+
 
 # ======================
 # 🔒 Auth (Basic ou Bearer)
@@ -875,6 +902,31 @@ async def download_movie_details():
 @app.get("/user_stats/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def user_stats(user_name: str, limit_recent: int = 50):
     try:
+        # Vérifie que la table feedback existe
+        with engine.connect() as c:
+            exists = c.execute(text("""
+                SELECT COUNT(*) 
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'feedback'
+            """)).scalar()
+
+        if not exists:
+            # Si la table feedback n'existe pas encore → renvoie un squelette vide
+            return {
+                "user": user_name,
+                "total": 0,
+                "likes": 0,
+                "dislikes": 0,
+                "like_rate": 0.0,
+                "accuracy": 0.0,
+                "confusion": {"tp": 0, "tn": 0, "fp": 0, "fn": 0},
+                "top_genres": [],
+                "by_year": [],
+                "recent": []
+            }
+
+        # Si la table existe → récupère les stats
         query = """
         SELECT f.ts, f.input_title, f.reco_title, f.pred_label, f.pred_score, f.liked,
                m.genres, m.release_year
@@ -886,7 +938,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         with engine.connect() as conn:
             rows = conn.execute(text(query), {"u": user_name}).fetchall()
 
-        # Si aucun historique pour cet utilisateur, renvoyer un squelette vide
+        # Aucun feedback pour cet utilisateur → squelette vide
         if not rows:
             return {
                 "user": user_name,
@@ -901,6 +953,9 @@ async def user_stats(user_name: str, limit_recent: int = 50):
                 "recent": []
             }
 
+        # -------------------------
+        # Analyse des feedbacks
+        # -------------------------
         cols = ["ts","input_title","reco_title","pred_label","pred_score","liked","genres","release_year"]
         df = pd.DataFrame(rows, columns=cols)
         df["liked"] = df["liked"].astype(int)
@@ -917,7 +972,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         fp = int(((df["pred_label"] == 1) & (df["liked"] == 0)).sum())
         fn = int(((df["pred_label"] == 0) & (df["liked"] == 1)).sum())
 
-        # Genres préférés (sum des likes par genre)
+        # Genres préférés (likes)
         def split_genres(s):
             if not s:
                 return []
@@ -934,7 +989,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         else:
             top_genres = []
 
-        # Likes par année de sortie
+        # Likes par année
         by_year = df.groupby("release_year")["liked"].sum().sort_index().reset_index()
         by_year = [
             {"year": int(y) if pd.notna(y) else None, "likes": int(v)}
@@ -963,6 +1018,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 # -- NEW: Historique des notes utilisateur (films notés via /update_rating)
 @app.get("/user_ratings/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
@@ -996,3 +1052,4 @@ async def _debug_catalog():
         }
     except Exception as e:
         return {"error": str(e)}
+
