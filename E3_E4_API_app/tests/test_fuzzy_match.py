@@ -1,23 +1,29 @@
 import os
 import sys
+import base64
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# --- Mock mlflow avant d'importer l'API ---
+# ---------- mocks AVANT d'importer l'API ----------
+# mlflow (évite toute dépendance réseau)
 sys.modules['mlflow'] = MagicMock()
-tracking_mock = MagicMock()
-tracking_mock.MlflowClient = MagicMock()
-sys.modules['mlflow.tracking'] = tracking_mock
+mlflow_tracking_mock = MagicMock()
+mlflow_tracking_mock.MlflowClient = MagicMock()
+sys.modules['mlflow.tracking'] = mlflow_tracking_mock
 
-import api_movie_v2  # après les mocks
+# joblib.load (évite FileNotFoundError sur les artefacts)
+joblib_mock = MagicMock()
+joblib_mock.load = MagicMock(return_value=MagicMock())
+sys.modules['joblib'] = joblib_mock
+# ---------- fin des mocks pré-import ----------
+
+import api_movie_v2  # <-- maintenant on peut importer
+from api_movie_v2 import STATE  # accès direct au STATE
+
 client = TestClient(api_movie_v2.app)
 
 def get_auth_headers():
-    import base64
     username = os.getenv("API_USERNAME")
     password = os.getenv("API_PASSWORD")
     if username and password:
@@ -28,12 +34,10 @@ def get_auth_headers():
         return {"Authorization": f"Bearer {token}"}
     raise ValueError("Aucun identifiant ou token fourni dans les variables d'environnement")
 
-# --- Fakes DB ---
+# --- fakes DB minimalistes ---
 class _FakeResult:
     def __init__(self, rows): self._rows = rows
     def fetchall(self): return self._rows
-    # compat fetchone/scalar si nécessaire ailleurs
-    def fetchone(self): return self._rows[0] if self._rows else None
 
 class _FakeConn:
     def __init__(self, rows): self._rows = rows
@@ -46,12 +50,11 @@ class _FakeEngine:
     def connect(self): return _FakeConn(self._rows)
     def begin(self): return _FakeConn(self._rows)
 
-# --- Tests ---
+# --- tests ---
 def test_fuzzy_match_found_db_only(monkeypatch):
-    # tuples (movie_id, title) renvoyés par la "BDD"
     rows = [(1, "Zombieland"), (2, "Zombiever"), (3, "Inside Out")]
-    # IMPORTANT : patcher l'engine utilisé par get_engine()
-    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine(rows))
+    # IMPORTANT : le code appelle get_engine() -> STATE["engine"]
+    monkeypatch.setitem(STATE, "engine", _FakeEngine(rows))
 
     r = client.get("/fuzzy_match/Zombieland", headers=get_auth_headers())
     assert r.status_code == 200
@@ -59,8 +62,6 @@ def test_fuzzy_match_found_db_only(monkeypatch):
     assert any(m["title"] == "Zombieland" and m["movie_id"] == 1 for m in data["matches"])
 
 def test_fuzzy_match_not_found_db_only(monkeypatch):
-    # aucune ligne -> endpoint doit renvoyer 404
-    monkeypatch.setitem(api_movie_v2.STATE, "engine", _FakeEngine([]))
-
+    monkeypatch.setitem(STATE, "engine", _FakeEngine([]))
     r = client.get("/fuzzy_match/DoesNotExist", headers=get_auth_headers())
     assert r.status_code == 404
