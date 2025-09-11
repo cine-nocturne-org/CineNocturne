@@ -34,16 +34,20 @@ def test_get_random_movies_valid(mock_connect):
     # mock de execute() → renvoie un objet qui a fetchall()
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [
-        ("Zombieland", "Synopsis", "url", "Action,Comédie", "netflix")
+        # (title, synopsis, poster_url, genres, platform, release_year)
+        ("Zombieland", "Synopsis", "url", "Action,Comédie", "netflix", 2009)
     ]
     mock_conn.execute.return_value = mock_result
 
-    response = client.get("/random_movies/?genre=Action&platforms=netflix&limit=1",
-                          headers=get_auth_headers())
+    response = client.get(
+        "/random_movies/?genre=Action&platforms=netflix&limit=1",
+        headers=get_auth_headers()
+    )
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)
     assert data[0]["title"] == "Zombieland"
+    assert data[0]["releaseYear"] == 2009
 
 
 @patch("api_movie_v2.engine.connect")
@@ -61,6 +65,7 @@ def test_get_random_movies_no_result(mock_connect):
         headers=get_auth_headers()
     )
     assert response.status_code == 404
+
 
 
 

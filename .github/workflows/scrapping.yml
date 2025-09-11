@@ -1,0 +1,53 @@
+name: Run scrapping every night
+
+on:
+  schedule:
+    # Tous les jours à 20:00 UTC (= 22h Paris l'été, 21h l'hiver)
+    - cron: "0 20 * * *"
+  workflow_dispatch: {}   # Permet aussi de lancer manuellement depuis l'onglet Actions
+
+concurrency:
+  group: nightly-scrapping
+  cancel-in-progress: false  # ne coupe pas un run en cours si le suivant démarre
+
+jobs:
+  scrapping-job:
+    runs-on: ubuntu-latest
+    timeout-minutes: 480   # max 8h
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scrapping script (with retries)
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          MYSQL_URL: ${{ secrets.MYSQL_URL }}
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            echo "▶️ Attempt $attempt..."
+            python E1_BDD/scrapping.py && break
+            status=$?
+            echo "⚠️ Failed with status $status. Waiting 120s before retry..."
+            if [ $attempt -lt 3 ]; then
+              sleep 120
+            else
+              echo "❌ All retries failed."
+              exit $status
+            fi
+          done
+
+      - name: Done
+        run: echo "✅ Scrapping terminé à $(date -u +"%Y-%m-%d %H:%M:%S") UTC"
