@@ -1,73 +1,71 @@
-import pytest
+import os
+import base64
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
-from api_movie_v2 import app, USERNAME, PASSWORD
-import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
-client = TestClient(app)
+import api_movie_v2
+client = TestClient(api_movie_v2.app)
 
 def get_auth_headers():
-    import base64
-    # Essayer Basic Auth
     username = os.getenv("API_USERNAME")
     password = os.getenv("API_PASSWORD")
     if username and password:
-        credentials = f"{username}:{password}"
-        b64_credentials = base64.b64encode(credentials.encode()).decode()
-        return {"Authorization": f"Basic {b64_credentials}"}
-    
-    # Sinon, essayer Bearer token
+        b64 = base64.b64encode(f"{username}:{password}".encode()).decode()
+        return {"Authorization": f"Basic {b64}"}
     token = os.getenv("API_TOKEN")
     if token:
         return {"Authorization": f"Bearer {token}"}
-    
     raise ValueError("Aucun identifiant ou token fourni dans les variables d'environnement")
 
-@patch("api_movie_v2.engine.connect")
-def test_get_random_movies_valid(mock_connect):
-    # mock du context manager 'with engine.connect() as conn'
-    mock_conn = MagicMock()
-    mock_connect.return_value.__enter__.return_value = mock_conn
+@patch("api_movie_v2.get_engine")
+def test_get_random_movies_valid(mock_get_engine):
+    # faux engine + connexion (context manager)
+    mock_engine = MagicMock()
+    mock_conn_cm = mock_engine.connect.return_value
+    mock_conn = mock_conn_cm.__enter__.return_value
 
-    # mock de execute() → renvoie un objet qui a fetchall()
+    # la requête renvoie 1 ligne exploitable
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [
-        # (title, synopsis, poster_url, genres, platform, release_year)
         ("Zombieland", "Synopsis", "url", "Action,Comédie", "netflix", 2009)
     ]
     mock_conn.execute.return_value = mock_result
+    mock_get_engine.return_value = mock_engine
 
-    response = client.get(
-        "/random_movies/?genre=Action&platforms=netflix&limit=1",
-        headers=get_auth_headers()
-    )
-    assert response.status_code == 200
-    data = response.json()
+    # neutraliser l'aléa de random.sample
+    with patch("api_movie_v2.random.sample", lambda seq, k: seq[:k]):
+        resp = client.get(
+            "/random_movies/?genre=Action&platforms=netflix&limit=1",
+            headers=get_auth_headers()
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
     assert isinstance(data, list)
+    assert len(data) == 1
     assert data[0]["title"] == "Zombieland"
     assert data[0]["releaseYear"] == 2009
+    assert data[0]["platform"] == "netflix"
+    assert data[0]["poster_url"] == "url"
+    assert data[0]["synopsis"] == "Synopsis"
 
+@patch("api_movie_v2.get_engine")
+def test_get_random_movies_no_result(mock_get_engine):
+    mock_engine = MagicMock()
+    mock_conn_cm = mock_engine.connect.return_value
+    mock_conn = mock_conn_cm.__enter__.return_value
 
-@patch("api_movie_v2.engine.connect")
-def test_get_random_movies_no_result(mock_connect):
-    mock_conn = MagicMock()
-    mock_connect.return_value.__enter__.return_value = mock_conn
-
-    # execute() → objet résultat dont fetchall() renvoie une liste vide
+    # aucune ligne trouvée
     mock_result = MagicMock()
     mock_result.fetchall.return_value = []
     mock_conn.execute.return_value = mock_result
+    mock_get_engine.return_value = mock_engine
 
-    response = client.get(
+    resp = client.get(
         "/random_movies/?genre=Action&platforms=netflix&limit=1",
         headers=get_auth_headers()
     )
-    assert response.status_code == 404
-
-
-
-
-
-
+    assert resp.status_code == 404
