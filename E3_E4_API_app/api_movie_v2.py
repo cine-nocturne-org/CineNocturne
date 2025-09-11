@@ -860,7 +860,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         with engine.connect() as conn:
             rows = conn.execute(text(query), {"u": user_name}).fetchall()
 
-        # Si aucun historique pour cet utilisateur, renvoyer un squelette vide
+        # Squelette vide si aucun historique
         if not rows:
             return {
                 "user": user_name,
@@ -877,8 +877,10 @@ async def user_stats(user_name: str, limit_recent: int = 50):
 
         cols = ["ts","input_title","reco_title","pred_label","pred_score","liked","genres","release_year"]
         df = pd.DataFrame(rows, columns=cols)
-        df["liked"] = df["liked"].astype(int)
-        df["pred_label"] = df["pred_label"].astype(int)
+
+        # 🔧 PATCH: robustifier la conversion (gère NULL / chaînes vides)
+        df["liked"] = pd.to_numeric(df["liked"], errors="coerce").fillna(0).astype(int)
+        df["pred_label"] = pd.to_numeric(df["pred_label"], errors="coerce").fillna(0).astype(int)
 
         n = len(df)
         likes = int((df["liked"] == 1).sum())
@@ -891,7 +893,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         fp = int(((df["pred_label"] == 1) & (df["liked"] == 0)).sum())
         fn = int(((df["pred_label"] == 0) & (df["liked"] == 1)).sum())
 
-        # Genres préférés (sum des likes par genre)
+        # Genres préférés (sum des likes par genre) — tolérant aux formats "|" et ","
         def split_genres(s):
             if not s:
                 return []
@@ -902,17 +904,18 @@ async def user_stats(user_name: str, limit_recent: int = 50):
 
         df["genres_list"] = df["genres"].apply(split_genres)
         expl = df.explode("genres_list")
+
         if not expl.empty:
             likes_by_genre = expl.groupby("genres_list")["liked"].sum().sort_values(ascending=False)
             top_genres = [{"genre": k, "likes": int(v)} for k, v in likes_by_genre.head(10).items()]
         else:
             top_genres = []
 
-        # Likes par année de sortie
-        by_year = df.groupby("release_year")["liked"].sum().sort_index().reset_index()
+        # Likes par année de sortie (conserve les NaN au groupby si besoin)
+        by_year_df = df.groupby("release_year", dropna=False)["liked"].sum().sort_index().reset_index()
         by_year = [
             {"year": int(y) if pd.notna(y) else None, "likes": int(v)}
-            for y, v in zip(by_year["release_year"], by_year["liked"])
+            for y, v in zip(by_year_df["release_year"], by_year_df["liked"])
         ]
 
         # Récents
@@ -939,6 +942,7 @@ async def user_stats(user_name: str, limit_recent: int = 50):
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
 
+
 # -- NEW: Historique des notes utilisateur (films notés via /update_rating)
 @app.get("/user_ratings/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def get_user_ratings(user_name: str, limit: int = 200):
@@ -956,6 +960,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
