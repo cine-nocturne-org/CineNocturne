@@ -75,6 +75,7 @@ DATABASE_URL = os.getenv(
     "MYSQL_URL",
     "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
 )
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 def get_engine():
     """Singleton SQLAlchemy engine (lazy)."""
@@ -1143,3 +1144,4 @@ async def _debug_catalog():
         }
     except Exception as e:
         return {"error": str(e)}
+
