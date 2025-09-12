@@ -26,6 +26,7 @@ import re
 # -------- Config locale du projet --------
 from E3_E4_API_app import config
 
+
 STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -882,4 +883,5 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
