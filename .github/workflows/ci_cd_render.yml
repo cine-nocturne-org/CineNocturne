@@ -40,13 +40,13 @@ jobs:
       # 4) Tests
       - name: Run tests
         env:
-          PYTHONPATH: ${{ github.workspace }}/E3_E4_API_app
           API_USERNAME: ${{ secrets.API_USERNAME }}
           API_PASSWORD: ${{ secrets.API_PASSWORD }}
           API_TOKEN:    ${{ secrets.API_TOKEN }}
           USER_LOU:     ${{ secrets.USER_LOU }}
           USER_MAX:     ${{ secrets.USER_MAX }}
         run: |
+          PYTHONPATH: ${{ github.workspace }}/E3_E4_API_app
           pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
       # 5) Déploiement Render (URL conservée)
@@ -57,3 +57,4 @@ jobs:
         run: |
           curl -X POST "https://api.render.com/deploy/srv-d2nhlbe3jp1c73cmfa00?key=T6klWYggy2c" \
             -H "Authorization: Bearer $RENDER_API_KEY"
+
