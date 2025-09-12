@@ -63,15 +63,45 @@ jobs:
           path: E3_E4_API_app/model_reco.out.ipynb
           if-no-files-found: warn
 
-      - name: Setup Git LFS
-        run: |
-          git lfs install
-          git lfs ls-files || true
-
-      - name: Commit model artifacts
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Checkout (with LFS)
+        uses: actions/checkout@v4
         with:
-          commit_message: "chore(model): update trained artifacts [skip ci]"
-          file_pattern: |
-            E3_E4_API_app/model/*.joblib
-            E3_E4_API_app/model/movies_full.csv
+          fetch-depth: 0
+          lfs: true
+
+      - name: Setup Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure LFS tracking
+        run: |
+          git lfs install --local
+          git lfs track "*.joblib"
+          git add .gitattributes
+
+      - name: Stage artifacts through LFS (renormalize)
+        run: |
+          # Force la conversion en pointeur LFS si nécessaire
+          git add --renormalize E3_E4_API_app/model/*.joblib
+          # (si tu ajoutes d’autres gros formats un jour, répète ici)
+
+      - name: Verify artifacts are LFS pointers (guard step)
+        run: |
+          echo "Tracked by LFS:"
+          git lfs ls-files || true
+          # Échoue si aucun .joblib n'est pris en charge par LFS
+          cnt=$(git lfs ls-files | wc -l)
+          if [ "$cnt" -eq 0 ]; then
+            echo "::error::No LFS-tracked files found. Aborting."
+            exit 1
+          fi
+
+      - name: Commit & push model artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git add E3_E4_API_app/model/*.joblib
+          git commit -m "chore(model): update trained artifacts [skip ci]" || echo "nothing to commit"
+          git push
+
