@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Ping CineNocturne API
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" https://cinenocturne.onrender.com/)
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://cinenocturne.onrender.com/docs)
           echo "Status code : $response"
           if [ "$response" -ne 200 ]; then
             echo "⚠️ L'API ne répond pas correctement !"
