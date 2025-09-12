@@ -10,7 +10,6 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel
 from typing import List, Optional
-import pandas as pd
 import numpy as np
 import joblib
 from sklearn.metrics.pairwise import cosine_similarity
@@ -21,14 +20,11 @@ import io
 from datetime import datetime
 import os
 import csv
-import mlflow
-from mlflow.tracking import MlflowClient
 from dotenv import load_dotenv
 import logging
 import tempfile
 import json
 import re
-
 
 # -------- Config locale du projet --------
 # (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
@@ -53,8 +49,8 @@ app = FastAPI(title="🎬 Louve Movies API")
 # ======================
 # 🧪 MLflow
 # ======================
-mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
-mlflow.set_experiment("louve_movies_monitoring")
+# 👉 pas d'import mlflow au module. On prépare juste l'URI pour le client.
+os.environ.setdefault("MLFLOW_TRACKING_URI", config.MLFLOW_TRACKING_URI)
 
 # ======================
 # 🗄️ Base de données
@@ -117,14 +113,7 @@ def verify_credentials(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
-# Modèles / objets
-xgb_model = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
-mlb = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
-scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
-nn_full = joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"))
-svd_full = joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"))
-tfidf_matrix = joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"))
-
+# --- migrations sûres avant de charger en mémoire ---
 def ensure_column_exists(table: str, column: str, coldef: str):
     """Crée la colonne si absente (idempotent)."""
     with engine.begin() as conn:
@@ -192,8 +181,6 @@ def ensure_movies_schema():
             except SQLAlchemyError:
                 pass  # non bloquant (selon version/permissions)
 
-
-# --- migrations sûres avant de charger en mémoire ---
 ensure_movies_schema()
 ensure_column_exists("movies", "user_rating", "FLOAT")  # (redondant mais OK)
 
@@ -205,10 +192,9 @@ with engine.connect() as conn:
             FROM movies
         """)
     ).mappings().all()
-    
+
 if not rows:
     rows = []
-
 
 movies = []
 titles = []
@@ -226,6 +212,9 @@ for r in rows:
     genres_list_all.append(genres_list)
     years.append(r["release_year"] if r["release_year"] else 2000)
 
+# Accès rapide par titre (sensible à la casse telle que BDD)
+movies_dict = {movie["title"]: movie for movie in movies}
+
 def safe_mlb_transform(mlb, genre_lists):
     try:
         return mlb.transform(genre_lists)
@@ -234,12 +223,47 @@ def safe_mlb_transform(mlb, genre_lists):
         cleaned = [[g for g in gs if g in known] for gs in genre_lists]
         return mlb.transform(cleaned)
 
-# Encodage genres & années
-genres_encoded_matrix = safe_mlb_transform(mlb, genres_list_all)
-years_scaled = scaler_year.transform(np.array([[y] for y in years]))
+# --- Lazy models + mmap ---
+xgb_model = None
+mlb = None
+scaler_year = None
+nn_full = None
+svd_full = None
+tfidf_matrix = None
+genres_encoded_matrix = None
+years_scaled = None
 
-# Accès rapide par titre (sensible à la casse telle que BDD)
-movies_dict = {movie["title"]: movie for movie in movies}
+def load_models():
+    """Charge paresseusement les artefacts lourds (mmap) et prépare les encodages."""
+    global xgb_model, mlb, scaler_year, nn_full, svd_full, tfidf_matrix
+    global genres_encoded_matrix, years_scaled
+
+    if xgb_model is not None:
+        return  # déjà chargés
+
+    # Imports locaux pour éviter les coûts au démarrage
+    import joblib as _joblib
+
+    # Estimator: pas forcément mmap (objet Python), ok
+    xgb_model = _joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
+
+    # Objets contenant des arrays -> mmap
+    mlb = _joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"), mmap_mode='r')
+    scaler_year = _joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"), mmap_mode='r')
+    nn_full = _joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"), mmap_mode='r')
+    svd_full = _joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"), mmap_mode='r')
+    tfidf_matrix = _joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"), mmap_mode='r')
+
+    # Prépare encodages nécessaires aux features
+    try:
+        genres_encoded_matrix = safe_mlb_transform(mlb, genres_list_all)
+    except Exception:
+        genres_encoded_matrix = None
+
+    try:
+        years_scaled = scaler_year.transform(np.array([[y] for y in years]))
+    except Exception:
+        years_scaled = None
 
 # ======================
 # 🧠 Helpers
@@ -250,13 +274,15 @@ def normalize_text(text: str) -> str:
     return text.lower()
 
 def mlflow_start_inference_run(input_title: str, top_k: int):
+    # Import local de mlflow + config de l'URI et de l'expérience
+    import mlflow
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", config.MLFLOW_TRACKING_URI))
     mlflow.set_experiment("louve_movies_monitoring")
     # 🔒 si un run est encore actif (exception précédente / requête précédente), on le ferme
     if mlflow.active_run() is not None:
         mlflow.end_run()
     # on renvoie l’objet contexte ActiveRun
     return mlflow.start_run(run_name=f"recommend_{input_title}")
-
 
 # ======================
 # 📦 Pydantic Models
@@ -328,8 +354,6 @@ async def update_rating(payload: RatingUpdate):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
-
 # -- Recommandations XGB personnalisées (publique pour l’UI)
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
@@ -340,6 +364,12 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     - logge dans MLflow (metrics + artifacts)
     - ferme automatiquement le run à la fin (context manager)
     """
+    # Charge paresseusement les modèles / matrices
+    load_models()
+
+    # Import local mlflow pour logging
+    import mlflow
+
     # 1) Trouver l'index du film d'entrée
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
@@ -393,10 +423,14 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i].reshape(1, -1))
             sims = 1 - nn_distances[0][1:] if nn_distances.shape[1] > 1 else np.array([0.0])
 
+            # Utilise les encodages calculés dans load_models()
+            ge = genres_encoded_matrix[i] if genres_encoded_matrix is not None else np.zeros(0, dtype=np.float32)
+            ys = years_scaled[i] if years_scaled is not None else np.array([0.0], dtype=np.float32)
+
             feature_vec = np.hstack([
                 svd_vec[0],
-                genres_encoded_matrix[i],
-                years_scaled[i],
+                ge,
+                ys,
                 sims.mean(), sims.max(), sims.min(), sims.std()
             ])
             features_list.append(feature_vec)
@@ -459,7 +493,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         # 8) Artifacts (format JSON + tableau)
         try:
             # MLflow ≥ 2.9
-            import pandas as _pd  # déjà importé en haut, mais sécurité
+            import pandas as _pd  # import local, évite coût au démarrage
             df_recos = _pd.DataFrame(rows_for_table)
             # log_table si dispo
             if hasattr(mlflow, "log_table"):
@@ -478,7 +512,6 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
         # Le run est automatiquement FERMÉ à la sortie du `with`
         return {"run_id": run_id, "recommendations": recos}
-
 
 # -- Enregistrer le feedback utilisateur (like/dislike) + accuracy online
 @app.post("/log_feedback", include_in_schema=False, dependencies=[Depends(verify_credentials)])
@@ -511,7 +544,8 @@ async def log_feedback(payload: FeedbackPayload):
         online_accuracy = float(correct) / float(total) if total > 0 else 0.0
 
         # 3) Log sans rouvrir le run (évite "already active")
-        client = MlflowClient()
+        from mlflow.tracking import MlflowClient  # import local
+        client = MlflowClient()  # l'URI est fournie via la variable d'environnement
         client.log_metric(run_id=payload.run_id, key="online_accuracy", value=online_accuracy, step=total)
         client.log_metric(run_id=payload.run_id, key="feedback_count", value=total, step=total)
 
@@ -522,12 +556,11 @@ async def log_feedback(payload: FeedbackPayload):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
 # -- Fuzzy match titres
 @app.get("/fuzzy_match/{title}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def fuzzy_match(
     title: str,
-    limit_sql: int = 400, 
+    limit_sql: int = 400,
     top_k: int = 10,
     score_cutoff: int = 60
 ):
@@ -536,7 +569,7 @@ async def fuzzy_match(
         raise HTTPException(status_code=400, detail="Titre vide.")
 
     # Normalisation & tokens
-    q_norm = normalize_text(q).replace("&", " and ")   
+    q_norm = normalize_text(q).replace("&", " and ")
     tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm) if t and t not in STOPWORDS]
     if not tokens:
         tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm)]
@@ -658,8 +691,6 @@ async def fuzzy_match(
         raise HTTPException(status_code=404, detail="Aucune correspondance fiable trouvée.")
     return {"matches": out}
 
-
-
 # -- Genres uniques (sur la BDD)
 @app.get("/genres/", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def get_unique_genres():
@@ -680,7 +711,6 @@ async def get_unique_genres():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
 
 # -- Détails d’un film + plateformes
 @app.get("/movie-details/{title}", dependencies=[Depends(verify_credentials)])
@@ -737,7 +767,6 @@ async def get_movie_details(title: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
 # -- Films aléatoires par genre et plateformes
 PLATFORM_TABLES = {
     "netflix": "netflix",
@@ -791,7 +820,6 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
 # -- Export CSV complet movie + plateformes (left join)
 @app.get("/download-movie-details/", dependencies=[Depends(verify_credentials)])
 async def download_movie_details():
@@ -844,7 +872,6 @@ async def download_movie_details():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
 # -- Stats utilisateur : historique likes/dislikes, genres préférés, accuracy, etc.
 @app.get("/user_stats/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def user_stats(user_name: str, limit_recent: int = 50):
@@ -874,6 +901,9 @@ async def user_stats(user_name: str, limit_recent: int = 50):
                 "by_year": [],
                 "recent": []
             }
+
+        # 👉 Import local de pandas
+        import pandas as pd
 
         cols = ["ts","input_title","reco_title","pred_label","pred_score","liked","genres","release_year"]
         df = pd.DataFrame(rows, columns=cols)
@@ -941,8 +971,6 @@ async def user_stats(user_name: str, limit_recent: int = 50):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
-
 # -- NEW: Historique des notes utilisateur (films notés via /update_rating)
 @app.get("/user_ratings/{user_name}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def get_user_ratings(user_name: str, limit: int = 200):
@@ -960,12 +988,3 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
-
-
-
-
-
-
-
-
-
