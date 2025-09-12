@@ -428,101 +428,65 @@ def main_app():
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
-    PLATFORM_TABLES = {
-        "netflix": "netflix",
-        "prime": "prime",
-        "hulu": "hulu",
-        "hbo": "hbo",
-        "apple": "apple",
-    }
-    
-    PLATFORM_LABELS = {
-        "netflix": "Netflix",
-        "prime": "Prime Video",
-        "hulu": "Hulu",
-        "hbo": "HBO Max",
-        "apple": "Apple TV+",
-    }
-    
-    @app.get("/random_movies/", dependencies=[Depends(verify_credentials)])
-    async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit: int = 10):
-        """
-        Renvoie une liste de films aléatoires pour un genre donné,
-        en agrégeant les plateformes disponibles par film.
-        """
+    with tab2:
+        st.subheader("🎲 Suggestions aléatoires par genre")
         try:
-            # Valide les plateformes demandées
-            selected = [p.lower() for p in platforms if p and p.lower() in PLATFORM_TABLES]
-            if not selected:
-                raise HTTPException(status_code=400, detail="Aucune plateforme valide sélectionnée.")
-    
-            agg = {}  # title -> dict info + set(platforms)
-    
-            with engine.connect() as conn:
-                for plat in selected:
-                    query = f"""
-                        SELECT 
-                            m.title,
-                            m.synopsis,
-                            m.poster_url,
-                            m.genres,
-                            m.release_year,
-                            '{plat}' AS platform_key
-                        FROM movies m
-                        JOIN {PLATFORM_TABLES[plat]} p ON m.title = p.title
-                        WHERE FIND_IN_SET(:genre, REPLACE(m.genres, '|', ','))
-                    """
-                    rows = conn.execute(text(query), {"genre": genre}).mappings().all()
-                    for r in rows:
-                        t = r["title"]
-                        if not t:
+            genre_response = api_get("genres/")
+            if genre_response.status_code == 200:
+                genre_list = genre_response.json()
+                with st.form("random_movies_form"):
+                    selected_genre = st.selectbox("Choisissez un genre", genre_list)
+                    selected_platforms = st.multiselect("Choisissez les plateformes", ["netflix", "prime", "hulu", "hbo", "apple"])
+                    submitted = st.form_submit_button("Afficher des films aléatoires")
+
+                if "already_seen_movies" not in st.session_state:
+                    st.session_state["already_seen_movies"] = set()
+                if "current_movies" not in st.session_state:
+                    st.session_state["current_movies"] = []
+
+                def fetch_random_movies():
+                    params = {"genre": selected_genre, "platforms": selected_platforms, "limit": 20}
+                    response = api_get("random_movies/", params=params)
+                    if response.status_code == 200:
+                        movies = response.json()
+                        fresh_movies = [
+                            m for m in movies
+                            if m["title"] not in st.session_state["already_seen_movies"]
+                            and m.get("poster_url") and m.get("synopsis")
+                        ][:10]
+                        for m in fresh_movies:
+                            st.session_state["already_seen_movies"].add(m["title"])
+                        st.session_state["current_movies"] = fresh_movies
+                    else:
+                        st.error(response.json().get("detail", "Erreur lors de la récupération des films."))
+
+                if submitted:
+                    st.session_state["already_seen_movies"].clear()
+                    fetch_random_movies()
+
+                if st.session_state["current_movies"]:
+                    if st.button("🔄 Proposer d'autres films"):
+                        fetch_random_movies()
+
+                    for movie in st.session_state["current_movies"]:
+                        poster = movie.get("poster_url")
+                        synopsis = movie.get("synopsis")
+                        year = movie.get("releaseYear", "N/A")
+                        if not poster or not synopsis:
                             continue
-                        if t not in agg:
-                            agg[t] = {
-                                "title": t,
-                                "synopsis": r.get("synopsis"),
-                                "poster_url": r.get("poster_url"),
-                                "genres": r.get("genres"),
-                                "releaseYear": r.get("release_year"),
-                                "platforms": set(),
-                            }
-                        # garde la première valeur non vide rencontrée
-                        if not agg[t].get("synopsis") and r.get("synopsis"):
-                            agg[t]["synopsis"] = r.get("synopsis")
-                        if not agg[t].get("poster_url") and r.get("poster_url"):
-                            agg[t]["poster_url"] = r.get("poster_url")
-                        if not agg[t].get("genres") and r.get("genres"):
-                            agg[t]["genres"] = r.get("genres")
-                        if not agg[t].get("releaseYear") and r.get("release_year") is not None:
-                            agg[t]["releaseYear"] = r.get("release_year")
-    
-                        label = PLATFORM_LABELS.get(r.get("platform_key", "").lower())
-                        if label:
-                            agg[t]["platforms"].add(label)
-    
-            if not agg:
-                raise HTTPException(status_code=404, detail="Aucun film trouvé pour ce genre et ces plateformes.")
-    
-            # Filtre films exploitables + conversion set->list triée
-            movies = []
-            for v in agg.values():
-                if v.get("poster_url") and v.get("synopsis"):
-                    v["platforms"] = sorted(v["platforms"])
-                    movies.append(v)
-    
-            if not movies:
-                raise HTTPException(status_code=404, detail="Aucun film exploitable (poster/synopsis manquants).")
-    
-            # Échantillonne aléatoirement
-            import random
-            return random.sample(movies, min(int(limit), len(movies)))
-    
-        except HTTPException:
-            raise
-        except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+                        cols = st.columns([1, 3])
+                        with cols[0]:
+                            st.image(poster, width='stretch')
+                        with cols[1]:
+                            title = movie.get("title", "Titre inconnu")
+                            raw_genres = movie.get("genres", [])
+                            genres = parse_genres(raw_genres)
+                            st.markdown(f"### 🎬 {title} ({year})")
+                            st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
+                            st.write(synopsis)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+            st.error(f"❌ Impossible de récupérer les genres : {e}")
+            st.text(traceback.format_exc())
 
 
     # ------------------------------
@@ -820,6 +784,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
