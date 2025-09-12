@@ -1,0 +1,20 @@
+name: Keep CineNocturne API Awake
+
+on:
+  schedule:
+    # Toutes les 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch:  # permet de lancer manuellement depuis GitHub
+
+jobs:
+  ping-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping CineNocturne API
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://cinenocturne.onrender.com/)
+          echo "Status code : $response"
+          if [ "$response" -ne 200 ]; then
+            echo "⚠️ L'API ne répond pas correctement !"
+            exit 1
+          fi
