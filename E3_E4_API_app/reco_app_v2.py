@@ -23,6 +23,13 @@ API_URL = "https://cinenocturne.onrender.com/"
 API_TOKEN = os.getenv("API_TOKEN")
 
 st.set_page_config(page_title="Recommandation de Films", page_icon="🍿")
+st.markdown("""
+<style>
+div.stButton > button { 
+  white-space: nowrap;      /* empêche le retour à la ligne */
+}
+</style>
+""", unsafe_allow_html=True)
 
 # Dictionnaire utilisateurs (login -> mdp)
 USERS = {k.replace("USER_", "").lower(): v for k, v in os.environ.items() if k.startswith("USER_")}
@@ -584,11 +591,15 @@ def main_app():
         recent_list = stats.get("recent") or []
     
         # --- KPIs
-        c1, c2, c3, c4 = st.columns(4)
+        pref_genre = (top_genres[0]["genre"] if top_genres else "N/A")
+        
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("👍 Likes", f"{likes}")
         c2.metric("👎 Dislikes", f"{dislikes}")
         c3.metric("Taux de like", f"{like_rate*100:.0f}%")
         c4.metric("Accuracy modèle", f"{accuracy*100:.0f}%")
+        c5.metric("Genre préféré (likes)", pref_genre)
+
     
         # --- Confusion matrix (tolérante)
         st.caption("Confusion (sur les recos où tu as donné un avis)")
@@ -664,35 +675,79 @@ def main_app():
         except Exception:
             st.info("Aucune donnée par année pour l’instant.")
     
-        # --- Historique récent des feedbacks
-        st.markdown("### 🕒 Derniers avis")
-        try:
-            recent = pd.DataFrame(recent_list)
-            if recent.empty:
-                st.info("Pas encore d’historique de feedback. Like/dislike quelques recos !")
+        # --- Historique des notations (remplace l'ancien "🕒 Derniers avis")
+        st.markdown("### 📝 Historique de mes notations")
+        
+        # On réutilise l'appel existant (tu l'as déjà plus haut pour les genres)
+        ratings, rerr = fetch_user_ratings(user, limit=5000)
+        if rerr:
+            st.warning(rerr)
+        else:
+            import pandas as pd
+        
+            df_hist = pd.DataFrame(ratings or [])
+            if df_hist.empty:
+                st.info("Tu n'as pas encore noté de films.")
             else:
-                # normaliser colonnes
-                for col in ["liked", "pred_score"]:
-                    if col in recent.columns:
-                        recent[col] = pd.to_numeric(recent[col], errors="coerce")
-                recent["avis"] = recent.get("liked", 0).fillna(0).astype(int).map({1:"👍", 0:"👎"})
-                keep = {
-                    "ts":"horodatage",
-                    "reco_title":"film",
-                    "pred_score":"score_modèle",
-                    "genres":"genres",
-                    "release_year":"année",
-                    "avis":"avis"
-                }
-                present = [c for c in keep.keys() if c in recent.columns]
-                recent_display = recent[present].rename(columns={k:keep[k] for k in present})
-                st.dataframe(recent_display, width='stretch', hide_index=True)
-    
-                csv_fb = recent_display.to_csv(index=False).encode("utf-8")
-                st.download_button("📥 Exporter l'historique (CSV)", csv_fb,
-                                   file_name="historique_feedback.csv", mime="text/csv")
-        except Exception:
-            st.info("Historique non disponible.")
+                # tri par ts si dispo + garder la dernière note par film
+                if "ts" in df_hist.columns:
+                    df_hist["ts"] = pd.to_datetime(df_hist["ts"], errors="coerce")
+                    df_hist = df_hist.sort_values("ts")
+                df_hist = df_hist.groupby("title", as_index=False).tail(1).copy()
+        
+                # genres jolis
+                def _fmt_genres(s):
+                    if s is None or (isinstance(s, float) and pd.isna(s)):
+                        return ""
+                    return ", ".join([g.strip() for g in str(s).replace("|", ",").split(",") if g.strip()])
+                if "genres" in df_hist.columns:
+                    df_hist["genres"] = df_hist["genres"].apply(_fmt_genres)
+        
+                # Si l'API n'a pas encore movie_rating, on le récupère à la volée (cache 1h)
+                if "movie_rating" not in df_hist.columns:
+                    @st.cache_data(ttl=3600)
+                    def _fetch_movie_ratings_map(titles):
+                        out = {}
+                        for t in titles:
+                            try:
+                                r = api_get(f"movie-details/{t}")
+                                out[t] = r.json().get("rating") if r.status_code == 200 else None
+                            except Exception:
+                                out[t] = None
+                        return out
+        
+                    uniq_titles = sorted(df_hist["title"].dropna().unique().tolist())
+                    rating_map = _fetch_movie_ratings_map(uniq_titles)
+                    df_hist["movie_rating"] = df_hist["title"].map(rating_map)
+        
+                # colonnes + renommage
+                for c in ("release_year", "rating", "movie_rating"):
+                    if c in df_hist.columns:
+                        df_hist[c] = pd.to_numeric(df_hist[c], errors="coerce")
+        
+                cols_order = ["ts", "title", "release_year", "genres", "rating", "movie_rating"]
+                present = [c for c in cols_order if c in df_hist.columns]
+                df_display = df_hist[present].rename(columns={
+                    "ts": "horodatage",
+                    "title": "film",
+                    "release_year": "année",
+                    "genres": "genres",
+                    "rating": "ma_note",
+                    "movie_rating": "note_globale"
+                })
+        
+                # rendu
+                st.dataframe(df_display, use_container_width=True, hide_index=True)
+        
+                # export CSV
+                csv_hist = df_display.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "📥 Exporter mes notations (CSV)",
+                    csv_hist,
+                    file_name="historique_notations.csv",
+                    mime="text/csv"
+                )
+
     
 
 
@@ -719,6 +774,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
