@@ -270,24 +270,35 @@ def main_app():
         chosen_film = st.session_state.get("chosen_film")
         if chosen_film:
             st.success(f"🎬 Film sélectionné : {chosen_film}")
-            note_input = st.number_input(
-                "Note du film (0.0 - 10.0)",
-                min_value=0.0, max_value=10.0, value=5.0, step=0.1, format="%.1f",
-                key="note_input"
+        
+            raw_note = st.text_input(
+                "Note (0.0 – 10.0)",
+                placeholder="ex : 7.5",
+                key="note_text"
             )
-            if st.button("Valider la note"):
-                payload = {
-                    "title": chosen_film,
-                    "rating": note_input,
-                    "user_name": st.session_state.username,  # <- ajouté
-                }
-                update_resp = api_post("update_rating", payload)
-
-                if update_resp.status_code == 200:
-                    st.success(f"✅ La note {note_input} a été enregistrée pour '{chosen_film}' !")
+        
+            if st.button("Valider la note", key="btn_save_rating"):
+                if not raw_note.strip():
+                    st.error("Entre une note avant de valider.")
                 else:
-                    detail = update_resp.json().get("detail", "Erreur inconnue")
-                    st.error(f"❌ Échec : {detail}")
+                    try:
+                        val = float(raw_note.replace(",", "."))
+                        if 0.0 <= val <= 10.0:
+                            payload = {
+                                "title": chosen_film,
+                                "rating": round(val, 1),
+                                "user_name": st.session_state.username,
+                            }
+                            update_resp = api_post("update_rating", payload)
+                            if update_resp.status_code == 200:
+                                st.success(f"✅ La note {round(val,1)} a été enregistrée pour '{chosen_film}' !")
+                            else:
+                                st.error(update_resp.json().get("detail", "Erreur inconnue"))
+                        else:
+                            st.warning("La note doit être comprise **entre 0 et 10**.")
+                    except ValueError:
+                        st.warning("Format invalide. Exemple valide : 7.5")
+
 
         # === Recommandations personnalisées (avec run_id + feedback) ===
         if chosen_film:
@@ -772,6 +783,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
