@@ -11,42 +11,49 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1️⃣ Récupérer le code du repo
-    - uses: actions/checkout@v3
+      # 1) Checkout + LFS
+      - name: Checkout (with LFS)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
 
-    # 2️⃣ Installer Python
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.12
+      - name: Enable Git LFS
+        run: |
+          git lfs install --local
+          git lfs pull
+          git lfs ls-files || true
 
-    # 3️⃣ Installer les dépendances
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest
+      # 2) Python
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.12
 
-    # 4️⃣ Lancer les tests
-    - name: Run tests
-      run: |
-        export PYTHONPATH=$PYTHONPATH:$(pwd)/E3_E4_API_app
-        export API_USERNAME=${{ secrets.API_USERNAME }}
-        export API_PASSWORD=${{ secrets.API_PASSWORD }}
-        export API_TOKEN=${{ secrets.API_TOKEN }}
-        export USER_LOU=${{ secrets.USER_LOU }}
-        export USER_MAX=${{ secrets.USER_MAX }}
-        pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
+      # 3) Install deps
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
 
-    # 5️⃣ Déployer sur Render uniquement si les tests passent
-    - name: Deploy to Render
-      if: success()
-      env:
-        RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-      run: |
-        curl -X POST "https://api.render.com/deploy/srv-d2nhlbe3jp1c73cmfa00?key=T6klWYggy2c" \
-          -H "Authorization: Bearer $RENDER_API_KEY"
+      # 4) Tests
+      - name: Run tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/E3_E4_API_app
+          API_USERNAME: ${{ secrets.API_USERNAME }}
+          API_PASSWORD: ${{ secrets.API_PASSWORD }}
+          API_TOKEN:    ${{ secrets.API_TOKEN }}
+          USER_LOU:     ${{ secrets.USER_LOU }}
+          USER_MAX:     ${{ secrets.USER_MAX }}
+        run: |
+          pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
-
-
-
+      # 5) Déploiement Render (URL conservée)
+      - name: Deploy to Render
+        if: success() && github.event_name == 'push'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          curl -X POST "https://api.render.com/deploy/srv-d2nhlbe3jp1c73cmfa00?key=T6klWYggy2c" \
+            -H "Authorization: Bearer $RENDER_API_KEY"
