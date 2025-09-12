@@ -257,6 +257,19 @@ def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("utf-8")
     return text.lower()
 
+def normalize_for_match(s: str) -> str:
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode("utf-8")
+    s = s.lower().replace("&", " and ")
+    # leet → lettres (permet "m3gan" ~ "megan")
+    leet_map = str.maketrans({
+        "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b"
+    })
+    s = s.translate(leet_map)
+    return s
+
+
 
 @contextmanager
 def mlflow_start_inference_run(input_title: str, top_k: int):
@@ -564,10 +577,11 @@ async def log_feedback(payload: FeedbackPayload):
 
 
 # -- Fuzzy match titres
+# -- Fuzzy match titres (title + original_title)
 @app.get("/fuzzy_match/{title}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def fuzzy_match(
     title: str,
-    limit_sql: int = 400, 
+    limit_sql: int = 400,
     top_k: int = 10,
     score_cutoff: int = 60
 ):
@@ -576,15 +590,15 @@ async def fuzzy_match(
         raise HTTPException(status_code=400, detail="Titre vide.")
 
     # Normalisation & tokens
-    q_norm = normalize_text(q).replace("&", " and ")   
+    q_norm = normalize_for_match(q)
     tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm) if t and t not in STOPWORDS]
     if not tokens:
         tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm)]
 
-    # Requêtes très courtes => augmente le rappel
-    if len(tokens) == 1:
-        limit_sql = max(limit_sql, 800)
-        score_cutoff = min(score_cutoff, 50)
+    # Requêtes très courtes → augmente le rappel
+    if len(tokens) == 1 and len(tokens[0]) <= 5:
+        limit_sql = max(limit_sql, 1000)
+        score_cutoff = min(score_cutoff, 45)
 
     # FULLTEXT en BOOLEAN MODE avec préfixes (+tok*)
     bool_query = " ".join(f"+{t}*" for t in tokens if len(t) >= 2)
@@ -592,13 +606,13 @@ async def fuzzy_match(
     with engine.connect() as conn:
         rows = []
 
-        # 1) FULLTEXT BOOLEAN MODE
+        # 1) FULLTEXT BOOLEAN MODE (title + original_title)
         if bool_query:
             try:
                 rows = conn.execute(text("""
                     SELECT movie_id, title
                     FROM movies
-                    WHERE MATCH(title) AGAINST(:bq IN BOOLEAN MODE)
+                    WHERE MATCH(title, original_title) AGAINST(:bq IN BOOLEAN MODE)
                     LIMIT :lim
                 """), {"bq": bool_query, "lim": int(limit_sql)}).fetchall()
             except SQLAlchemyError:
@@ -610,15 +624,15 @@ async def fuzzy_match(
                 rows = conn.execute(text("""
                     SELECT movie_id, title
                     FROM movies
-                    WHERE MATCH(title) AGAINST(:q IN NATURAL LANGUAGE MODE)
+                    WHERE MATCH(title, original_title) AGAINST(:q IN NATURAL LANGUAGE MODE)
                     LIMIT :lim
                 """), {"q": q, "lim": int(limit_sql)}).fetchall()
             except SQLAlchemyError:
                 rows = []
 
-        # 3) LIKE "normalisé" (retire espaces/ponctuation, & -> and)
+        # 3) LIKE normalisé (accents/ponctuation/& → and/leet) sur title+original_title
         if not rows:
-            norm_q = re.sub(r"[^a-z0-9]+", "", q_norm)
+            norm_q = re.sub(r"[^a-z0-9]+", "", q_norm)  # déjà normalize_for_match
             try:
                 rows = conn.execute(text("""
                     SELECT movie_id, title
@@ -631,7 +645,7 @@ async def fuzzy_match(
                         REPLACE(
                         REPLACE(
                         REPLACE(
-                            LOWER(title),
+                            LOWER(CONCAT_WS(' ', title, COALESCE(original_title,''))),
                         ' ', ''), '-', ''), '''', ''), ':', ''), '.', ''), ',', ''), '&', 'and'
                         ) LIKE :norm_like
                     LIMIT :lim
@@ -639,14 +653,14 @@ async def fuzzy_match(
             except SQLAlchemyError:
                 rows = []
 
-        # 4) LIKE souple avec jokers entre tokens: %hung%games%songbirds%
+        # 4) LIKE souple avec jokers entre tokens (sur title+original_title)
         if not rows and tokens:
             like_chain = "%" + "%".join(tokens) + "%"
             try:
                 rows = conn.execute(text("""
                     SELECT movie_id, title
                     FROM movies
-                    WHERE LOWER(title) LIKE :like_chain
+                    WHERE LOWER(CONCAT_WS(' ', title, COALESCE(original_title,''))) LIKE :like_chain
                     LIMIT :lim
                 """), {"like_chain": like_chain, "lim": int(limit_sql)}).fetchall()
             except SQLAlchemyError:
@@ -658,25 +672,26 @@ async def fuzzy_match(
     candidates = [r[1] for r in rows]
     id_by_title = {r[1]: r[0] for r in rows}
 
-    # Rerank avec RapidFuzz
+    # Rerank avec RapidFuzz — même processor des deux côtés
     matches = process.extract(
         query=q,
         choices=candidates,
         scorer=fuzz.WRatio,
+        processor=normalize_for_match,
         limit=top_k * 3,
         score_cutoff=int(score_cutoff)
     )
 
-    # Si peu de résultats, on complète via partial_ratio (plus permissif)
+    # Plus permissif si peu de résultats
     if len(matches) < top_k:
         extra = process.extract(
             query=q,
             choices=candidates,
             scorer=fuzz.partial_ratio,
+            processor=normalize_for_match,
             limit=top_k * 3,
-            score_cutoff=max(45, score_cutoff - 10)
+            score_cutoff=max(40, score_cutoff - 15)
         )
-        # fusion garde le meilleur score par titre
         best = {}
         for t, s, *_ in matches + extra:
             best[t] = max(best.get(t, 0), int(s))
@@ -1023,6 +1038,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
