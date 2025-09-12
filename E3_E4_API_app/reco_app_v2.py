@@ -682,9 +682,7 @@ def main_app():
         ratings, rerr = fetch_user_ratings(user, limit=5000)
         if rerr:
             st.warning(rerr)
-        else:
-            import pandas as pd
-        
+        else:   
             df_hist = pd.DataFrame(ratings or [])
             if df_hist.empty:
                 st.info("Tu n'as pas encore noté de films.")
@@ -774,6 +772,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
