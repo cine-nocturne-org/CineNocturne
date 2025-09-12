@@ -2,7 +2,7 @@
 # ============================================================
 # 🎬 Louve Movies API — Recommandations + Monitoring MLflow
 # ============================================================
-
+from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.responses import StreamingResponse
@@ -34,6 +34,20 @@ import re
 # (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
 from E3_E4_API_app import config
 
+from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import RequestValidationError
+from fastapi.exceptions import RequestValidationError
+import traceback
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc: Exception):
+    error_message = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger.error(f"Unhandled error: {error_message}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "error": str(exc)},
+    )
+
 STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
 
 # ======================
@@ -48,7 +62,7 @@ logger = logging.getLogger("louve_api")
 # ======================
 # 🚀 FastAPI
 # ======================
-app = FastAPI(title="🎬 Louve Movies API")
+app = FastAPI(title="🎬 API CinéNocturne")
 
 # ======================
 # 🧪 MLflow
@@ -249,13 +263,32 @@ def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("utf-8")
     return text.lower()
 
+
+@contextmanager
 def mlflow_start_inference_run(input_title: str, top_k: int):
-    mlflow.set_experiment("louve_movies_monitoring")
-    # 🔒 si un run est encore actif (exception précédente / requête précédente), on le ferme
-    if mlflow.active_run() is not None:
-        mlflow.end_run()
-    # on renvoie l’objet contexte ActiveRun
-    return mlflow.start_run(run_name=f"recommend_{input_title}")
+    """Démarre un run MLflow si possible. Sinon, no-op avec run_id='no-mlflow'."""
+    try:
+        mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
+        mlflow.set_experiment("louve_movies_monitoring")
+        if mlflow.active_run() is not None:
+            mlflow.end_run()
+        run = mlflow.start_run(run_name=f"recommend_{input_title}")
+        ok = True
+    except Exception as e:
+        logger.warning("MLflow indisponible: %s (mode no-mlflow)", e)
+        class _DummyRun:
+            run_id = "no-mlflow"
+        run, ok = _DummyRun(), False
+
+    try:
+        yield run, ok
+    finally:
+        try:
+            if ok:
+                mlflow.end_run()
+        except Exception:
+            pass
+
 
 
 # ======================
@@ -983,6 +1016,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
