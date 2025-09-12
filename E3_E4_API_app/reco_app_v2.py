@@ -81,6 +81,14 @@ def api_get(endpoint: str, params: dict = None):
 def api_post(endpoint: str, payload: dict):
     return requests.post(f"{API_URL}{endpoint.lstrip('/')}", headers=_headers(), json=payload)
 
+PLAT_LABELS = {
+    "netflix": "Netflix",
+    "prime": "Prime Video",
+    "hulu": "Hulu",
+    "hbo": "HBO Max",
+    "apple": "Apple TV+",
+}
+
 # -----------------------------
 # MLflow (nested run côté UI)
 # -----------------------------
@@ -252,7 +260,7 @@ def main_app():
                         # ✅ La boîte avec bordure
                         with st.container(border=True):
                             if match.get("poster"):
-                                st.image(match["poster"], use_container_width=True)
+                                st.image(match["poster"], width='stretch')
                 
                             st.caption(match.get("title", "Titre inconnu"))
                 
@@ -260,7 +268,7 @@ def main_app():
                             is_selected = (st.session_state.get("chosen_film") == match.get("title"))
                             label = "✅ Sélectionné" if is_selected else "Sélectionner"
                 
-                            if st.button(label, key=key, use_container_width=True, disabled=is_selected):
+                            if st.button(label, key=key, width='stretch', disabled=is_selected):
                                 reset_only_reco()
                                 st.session_state["chosen_film"] = match.get("title")
 
@@ -425,6 +433,7 @@ def main_app():
                 with c_reset:
                     st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
 
+
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
     # ------------------------------
@@ -434,59 +443,124 @@ def main_app():
             genre_response = api_get("genres/")
             if genre_response.status_code == 200:
                 genre_list = genre_response.json()
+    
                 with st.form("random_movies_form"):
                     selected_genre = st.selectbox("Choisissez un genre", genre_list)
-                    selected_platforms = st.multiselect("Choisissez les plateformes", ["netflix", "prime", "hulu", "hbo", "apple"])
+                    # mêmes clés que côté API : netflix / prime / hulu / hbo / apple
+                    selected_platforms = st.multiselect(
+                        "Choisissez les plateformes",
+                        ["netflix", "prime", "hulu", "hbo", "apple"]
+                    )
                     submitted = st.form_submit_button("Afficher des films aléatoires")
-
+    
                 if "already_seen_movies" not in st.session_state:
                     st.session_state["already_seen_movies"] = set()
                 if "current_movies" not in st.session_state:
                     st.session_state["current_movies"] = []
-
+    
                 def fetch_random_movies():
+                    if not selected_platforms:
+                        st.warning("Sélectionne au moins une plateforme.")
+                        return
+    
                     params = {"genre": selected_genre, "platforms": selected_platforms, "limit": 20}
                     response = api_get("random_movies/", params=params)
                     if response.status_code == 200:
-                        movies = response.json()
+                        movies = response.json()  # un item par (titre, plateforme)
+    
+                        # --- Agrégation par titre -> plateformes multiples
+                        agg = {}
+                        for m in movies:
+                            t = m.get("title")
+                            if not t:
+                                continue
+    
+                            # label jolies pour les plateformes
+                            p_raw = (m.get("platform") or "").lower()
+                            plat = PLAT_LABELS.get(p_raw, m.get("platform"))
+    
+                            if t not in agg:
+                                agg[t] = {
+                                    "title": t,
+                                    "synopsis": m.get("synopsis"),
+                                    "poster_url": m.get("poster_url"),
+                                    "genres": m.get("genres"),
+                                    "releaseYear": m.get("releaseYear"),
+                                    "platforms": set(),
+                                }
+    
+                            # garde la première valeur non vide pour l’affichage
+                            for k in ("synopsis", "poster_url", "genres", "releaseYear"):
+                                if not agg[t].get(k) and m.get(k):
+                                    agg[t][k] = m.get(k)
+    
+                            if plat:
+                                agg[t]["platforms"].add(plat)
+    
+                        movies_agg = []
+                        for e in agg.values():
+                            e["platforms"] = sorted(e["platforms"])
+                            movies_agg.append(e)
+    
+                        # Filtre et limite (10) en évitant les doublons déjà vus
                         fresh_movies = [
-                            m for m in movies
+                            m for m in movies_agg
                             if m["title"] not in st.session_state["already_seen_movies"]
-                            and m.get("poster_url") and m.get("synopsis")
+                               and m.get("poster_url") and m.get("synopsis")
                         ][:10]
+    
                         for m in fresh_movies:
                             st.session_state["already_seen_movies"].add(m["title"])
                         st.session_state["current_movies"] = fresh_movies
                     else:
-                        st.error(response.json().get("detail", "Erreur lors de la récupération des films."))
-
+                        try:
+                            st.error(response.json().get("detail", "Erreur lors de la récupération des films."))
+                        except Exception:
+                            st.error(f"Erreur lors de la récupération des films. (HTTP {response.status_code})")
+    
                 if submitted:
                     st.session_state["already_seen_movies"].clear()
                     fetch_random_movies()
-
+    
                 if st.session_state["current_movies"]:
                     if st.button("🔄 Proposer d'autres films"):
                         fetch_random_movies()
-
+    
                     for movie in st.session_state["current_movies"]:
                         poster = movie.get("poster_url")
                         synopsis = movie.get("synopsis")
                         year = movie.get("releaseYear", "N/A")
                         if not poster or not synopsis:
                             continue
+    
                         cols = st.columns([1, 3])
                         with cols[0]:
-                            st.image(poster, width='stretch')
+                            st.image(poster, width='stretch')  # (remplace use_container_width)
+    
                         with cols[1]:
                             title = movie.get("title", "Titre inconnu")
                             raw_genres = movie.get("genres", [])
                             genres = parse_genres(raw_genres)
+    
                             st.markdown(f"### 🎬 {title} ({year})")
+    
+                            # 👇 plateformes sous l’année
+                            plats = movie.get("platforms") or []
+                            if plats:
+                                st.caption("Disponible sur : " + " · ".join(plats))
+    
                             st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                             st.write(synopsis)
+            else:
+                try:
+                    st.error(genre_response.json().get("detail", "Impossible de récupérer la liste des genres."))
+                except Exception:
+                    st.error(f"Impossible de récupérer la liste des genres. (HTTP {genre_response.status_code})")
         except Exception as e:
             st.error(f"❌ Impossible de récupérer les genres : {e}")
             st.text(traceback.format_exc())
+
+
 
 
     # ------------------------------
@@ -747,7 +821,7 @@ def main_app():
                 })
         
                 # rendu
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
+                st.dataframe(df_display, width='stretch', hide_index=True)
         
                 # export CSV
                 csv_hist = df_display.to_csv(index=False).encode("utf-8")
@@ -784,6 +858,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
