@@ -5,7 +5,7 @@
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel
@@ -28,18 +28,11 @@ import logging
 import tempfile
 import json
 import re
-
+import traceback
 
 # -------- Config locale du projet --------
 # (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
 from E3_E4_API_app import config
-
-from fastapi.responses import JSONResponse
-from fastapi.exception_handlers import RequestValidationError
-from fastapi.exceptions import RequestValidationError
-import traceback
-
-
 
 STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
 
@@ -367,45 +360,68 @@ async def update_rating(payload: RatingUpdate):
 # -- Recommandations XGB personnalisées (publique pour l’UI)
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    """
-    Endpoint de recommandation :
-    - construit des candidats via similarité TF-IDF + filtre genres
-    - score via XGB + réajustements (user_rating, movie_rating)
-    - logge dans MLflow (metrics + artifacts)
-    - ferme automatiquement le run à la fin (context manager)
-    """
     # 1) Trouver l'index du film d'entrée
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    # 2) Démarrer un run MLflow dans un contexte (auto-close)
-    with mlflow_start_inference_run(input_title=title, top_k=top_k) as run:
-        try:
-            info = getattr(run, "info", None)
-            rid = (info.get("run_id") if isinstance(info, dict) else getattr(info, "run_id", None))
-            if not rid:
-                rid = getattr(run, "run_id", "")
-            run_id = str(rid or "")
-        except Exception:
-            run_id = ""
+    # Utiliser le titre exact de la BDD (pour movies_dict)
+    exact_title = titles[idx]
 
-        # Tags + paramètres de base
-        mlflow.set_tags({
-            "stage": "inference",
-            "component": "xgb_recommender",
-            "source": "api",
-        })
-        mlflow.log_param("input_title", title)
-        mlflow.log_param("top_k", int(top_k))
+    # 2) Démarrer un run MLflow (optionnel)
+    with mlflow_start_inference_run(input_title=exact_title, top_k=top_k) as (run, ok):
+        # run_id robuste
+        try:
+            if ok:
+                info = getattr(run, "info", None)
+                rid = getattr(info, "run_id", None) or getattr(run, "run_id", None)
+                run_id = str(rid or "no-mlflow")
+            else:
+                run_id = "no-mlflow"
+        except Exception:
+            run_id = "no-mlflow"
+
+        # Helpers MLflow (no-op si ok=False)
+        def _set_tags(tags: dict):
+            if ok:
+                try: mlflow.set_tags(tags)
+                except Exception: pass
+        def _log_param(k, v):
+            if ok:
+                try: mlflow.log_param(k, v)
+                except Exception: pass
+        def _log_metric(k, v, step=None):
+            if ok:
+                try: mlflow.log_metric(k, v, step=step)
+                except Exception: pass
+        def _log_table_df(df):
+            if ok:
+                try:
+                    if hasattr(mlflow, "log_table"):
+                        mlflow.log_table(df, artifact_file="recommendations.parquet")
+                    else:
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            p = os.path.join(tmpdir, "recommendations.csv")
+                            df.to_csv(p, index=False)
+                            mlflow.log_artifact(p)
+                except Exception:
+                    pass
+        def _log_dict(obj, path):
+            if ok:
+                try: mlflow.log_dict(obj, artifact_file=path)
+                except Exception: pass
+
+        _set_tags({"stage": "inference", "component": "xgb_recommender", "source": "api"})
+        _log_param("input_title", exact_title)
+        _log_param("top_k", int(top_k))
 
         # 3) Notes du film d'entrée
-        input_movie = movies_dict.get(title, {})
+        input_movie = movies_dict.get(exact_title, {})
         input_user_rating = float(input_movie.get("user_rating") or 0.0)
         input_movie_rating = float(input_movie.get("rating") or 5.0)
-        mlflow.log_metric("user_rating", input_user_rating)
-        mlflow.log_metric("movie_rating", input_movie_rating)
+        _log_metric("user_rating", input_user_rating)
+        _log_metric("movie_rating", input_movie_rating)
 
         # 4) Candidats par similarité TF-IDF + filtre genres
         chosen_genres = set(genres_list_all[idx])
@@ -415,7 +431,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
         candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
-        mlflow.log_metric("n_candidates", int(len(candidate_indices)))
+        _log_metric("n_candidates", int(len(candidate_indices)))
 
         if not candidate_indices:
             return {"run_id": run_id, "recommendations": []}
@@ -437,7 +453,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             candidate_titles.append(titles[i])
 
         if not features_list:
-            mlflow.log_metric("n_candidates", 0)
+            _log_metric("n_candidates", 0)
             return {"run_id": run_id, "recommendations": []}
 
         X = np.array(features_list)
@@ -464,9 +480,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
             )
             pred_label = int(final_score >= 0.5)
 
-            # Metrics par rang
-            mlflow.log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
-            mlflow.log_metric("final_score", float(final_score), step=rank)
+            _log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
+            _log_metric("final_score", float(final_score), step=rank)
 
             rows_for_table.append({
                 "rank": rank,
@@ -487,38 +502,25 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "pred_label": pred_label,
             })
 
-        mlflow.log_metric("max_pred_score", float(proba_scaled.max()))
-        mlflow.log_metric("min_pred_score", float(proba_scaled.min()))
+        _log_metric("max_pred_score", float(proba_scaled.max()))
+        _log_metric("min_pred_score", float(proba_scaled.min()))
 
-        # 8) Artifacts (format JSON + tableau)
+        # 8) Artifacts
         try:
-            # MLflow ≥ 2.9
-            import pandas as _pd  # déjà importé en haut, mais sécurité
-            df_recos = _pd.DataFrame(rows_for_table)
-            # log_table si dispo
-            if hasattr(mlflow, "log_table"):
-                mlflow.log_table(df_recos, artifact_file="recommendations.parquet")
-            else:
-                # fallback CSV temporaire
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    path_csv = os.path.join(tmpdir, "recommendations.csv")
-                    df_recos.to_csv(path_csv, index=False)
-                    mlflow.log_artifact(path_csv)
-            # Liste des titres recommandés
-            mlflow.log_dict([r["title"] for r in recos], artifact_file="top_titles.json")
-        except Exception as _:
-            # En cas d'échec artifact, on continue sans planter l'API
+            df_recos = pd.DataFrame(rows_for_table)
+            _log_table_df(df_recos)
+            _log_dict([r["title"] for r in recos], "top_titles.json")
+        except Exception:
             pass
 
-        # Le run est automatiquement FERMÉ à la sortie du `with`
         return {"run_id": run_id, "recommendations": recos}
+
 
 
 # -- Enregistrer le feedback utilisateur (like/dislike) + accuracy online
 @app.post("/log_feedback", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def log_feedback(payload: FeedbackPayload):
     try:
-        # 1) Sauvegarder le feedback
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO feedback (user_name, input_title, reco_title, pred_label, pred_score, liked, run_id)
@@ -533,7 +535,6 @@ async def log_feedback(payload: FeedbackPayload):
                 "rid": payload.run_id
             })
 
-            # 2) Recalcul accuracy online (sur ce run)
             row = conn.execute(text("""
                 SELECT SUM(CASE WHEN pred_label = liked THEN 1 ELSE 0 END) AS correct,
                        COUNT(*) AS total
@@ -544,10 +545,14 @@ async def log_feedback(payload: FeedbackPayload):
         correct, total = (row[0] or 0), (row[1] or 0)
         online_accuracy = float(correct) / float(total) if total > 0 else 0.0
 
-        # 3) Log sans rouvrir le run (évite "already active")
-        client = MlflowClient()
-        client.log_metric(run_id=payload.run_id, key="online_accuracy", value=online_accuracy, step=total)
-        client.log_metric(run_id=payload.run_id, key="feedback_count", value=total, step=total)
+        # 🔒 Log MLflow seulement si on a un vrai run_id
+        if payload.run_id and payload.run_id != "no-mlflow":
+            try:
+                client = MlflowClient()
+                client.log_metric(run_id=payload.run_id, key="online_accuracy", value=online_accuracy, step=total)
+                client.log_metric(run_id=payload.run_id, key="feedback_count", value=total, step=total)
+            except Exception as e:
+                logger.warning(f"MLflow logging skipped: {e}")
 
         return {"message": "Feedback enregistré", "online_accuracy": online_accuracy, "count": total}
 
@@ -555,6 +560,7 @@ async def log_feedback(payload: FeedbackPayload):
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 # -- Fuzzy match titres
@@ -1017,6 +1023,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
