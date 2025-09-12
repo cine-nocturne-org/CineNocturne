@@ -948,7 +948,14 @@ async def user_stats(user_name: str, limit_recent: int = 50):
 async def get_user_ratings(user_name: str, limit: int = 200):
     try:
         query = """
-        SELECT ur.ts, ur.title, ur.rating, m.genres, m.release_year, m.poster_url
+        SELECT 
+            ur.ts,
+            ur.title,
+            ur.rating,                -- note donnée par l'utilisateur
+            m.genres,
+            m.release_year,
+            m.poster_url,
+            m.rating AS movie_rating  -- ✅ note "globale" du film (depuis la table movies)
         FROM user_ratings ur
         LEFT JOIN movies m ON m.title = ur.title
         WHERE ur.user_name = :u
@@ -956,10 +963,28 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         LIMIT :lim
         """
         with engine.connect() as conn:
-            rows = conn.execute(text(query), {"u": user_name, "lim": int(limit)}).mappings().all()
-        return {"ratings": [dict(r) for r in rows]}
+            rows = conn.execute(
+                text(query), {"u": user_name, "lim": int(limit)}
+            ).mappings().all()
+
+        # (optionnel) nettoyage des types
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d.get("rating") is not None:
+                d["rating"] = float(d["rating"])
+            if d.get("movie_rating") is not None:
+                d["movie_rating"] = float(d["movie_rating"])
+            if d.get("release_year") is not None:
+                d["release_year"] = int(d["release_year"])
+            out.append(d)
+
+        return {"ratings": out}
+
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
+
 
 
 
