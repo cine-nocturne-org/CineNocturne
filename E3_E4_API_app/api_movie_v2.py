@@ -2,7 +2,6 @@
 # ============================================================
 # 🎬 Louve Movies API — Recommandations + Monitoring MLflow
 # ============================================================
-
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, APIKeyHeader
 from fastapi.responses import StreamingResponse
@@ -12,12 +11,10 @@ from pydantic import BaseModel
 from typing import List, Optional
 import numpy as np
 import joblib
-from sklearn.metrics.pairwise import cosine_similarity
 from rapidfuzz import process, fuzz
 import unicodedata
 import random
 import io
-from datetime import datetime
 import os
 import csv
 from dotenv import load_dotenv
@@ -27,29 +24,16 @@ import json
 import re
 
 # -------- Config locale du projet --------
-# (le module E3_E4_API_app.config doit définir MLFLOW_TRACKING_URI)
 from E3_E4_API_app import config
 
 STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
 
-# ======================
-# 🔧 Logging
-# ======================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("louve_api")
 
-# ======================
-# 🚀 FastAPI
-# ======================
 app = FastAPI(title="🎬 Louve Movies API")
 
-# ======================
-# 🧪 MLflow
-# ======================
-# 👉 pas d'import mlflow au module. On prépare juste l'URI pour le client.
+# Important: ne pas importer mlflow ici. On ne fait que passer l'URI via env.
 os.environ.setdefault("MLFLOW_TRACKING_URI", config.MLFLOW_TRACKING_URI)
 
 # ======================
@@ -58,7 +42,6 @@ os.environ.setdefault("MLFLOW_TRACKING_URI", config.MLFLOW_TRACKING_URI)
 DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
 engine = create_engine(DATABASE_URL)
 
-# Crée les tables si absentes
 with engine.begin() as conn:
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS feedback (
@@ -73,7 +56,6 @@ with engine.begin() as conn:
             run_id VARCHAR(64)
         )
     """))
-    # NEW: historique des notes utilisateurs
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS user_ratings (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -85,7 +67,7 @@ with engine.begin() as conn:
     """))
 
 # ======================
-# 🔒 Auth (Basic ou Bearer)
+# 🔒 Auth
 # ======================
 load_dotenv()
 USERNAME: str = os.getenv("API_USERNAME")
@@ -99,131 +81,40 @@ def verify_credentials(
     credentials: HTTPBasicCredentials = Depends(security_basic),
     api_key: str = Depends(api_key_header)
 ):
-    # Mode 1 : Basic Auth
     if credentials and credentials.username == USERNAME and credentials.password == PASSWORD:
         return True
-    # Mode 2 : Bearer Token
     if api_key and api_key == f"Bearer {API_TOKEN}":
         return True
     raise HTTPException(status_code=401, detail="Non autorisé")
 
 # ======================
-# 🤖 Chargement modèles & données
+# 🤖 Données en mémoire (léger)
 # ======================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "model")
-
-# --- migrations sûres avant de charger en mémoire ---
-def ensure_column_exists(table: str, column: str, coldef: str):
-    """Crée la colonne si absente (idempotent)."""
-    with engine.begin() as conn:
-        exists = conn.execute(text("""
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = :table
-              AND COLUMN_NAME = :column
-        """), {"table": table, "column": column}).scalar()
-        if not exists:
-            conn.execute(text(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {coldef}"))
-
-def ensure_movies_schema():
-    """Crée/ajoute sans casser: colonnes requises + index FULLTEXT."""
-    required_cols = {
-        "title": "VARCHAR(255)",
-        "original_title": "VARCHAR(255)",
-        "release_year": "INT",
-        "genres": "VARCHAR(255)",
-        "synopsis": "TEXT",
-        "rating": "FLOAT",
-        "vote_count": "INT",
-        "original_language": "VARCHAR(10)",
-        "poster_url": "VARCHAR(255)",
-        "key_words": "TEXT",
-        "user_rating": "FLOAT",
-        "platforms_flatrate": "VARCHAR(1024)",
-        "platforms_rent": "VARCHAR(1024)",
-        "platforms_buy": "VARCHAR(1024)",
-        "platform_link": "VARCHAR(512)",
-    }
-
-    with engine.begin() as conn:
-        # crée la table si absente (squelette minimal)
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS movies (
-                movie_id INT PRIMARY KEY
-            ) ENGINE=InnoDB
-        """))
-
-        # colonnes existantes
-        existing = conn.execute(text("""
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies'
-        """)).fetchall()
-        existing_cols = {r[0] for r in existing}
-
-        # ajouter manquantes
-        for col, ddl in required_cols.items():
-            if col not in existing_cols:
-                conn.execute(text(f"ALTER TABLE movies ADD COLUMN `{col}` {ddl}"))
-
-        # FULLTEXT (sur title)
-        has_idx = conn.execute(text("""
-            SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'movies'
-              AND INDEX_NAME = 'idx_movies_title_fulltext'
-        """)).scalar()
-        if not has_idx:
-            try:
-                conn.execute(text("CREATE FULLTEXT INDEX idx_movies_title_fulltext ON movies(title)"))
-            except SQLAlchemyError:
-                pass  # non bloquant (selon version/permissions)
-
-ensure_movies_schema()
-ensure_column_exists("movies", "user_rating", "FLOAT")  # (redondant mais OK)
-
-# Films depuis BDD (mémoire)
 with engine.connect() as conn:
-    rows = conn.execute(
-        text("""
-            SELECT movie_id, title, genres, release_year, synopsis, poster_url, rating, user_rating
-            FROM movies
-        """)
-    ).mappings().all()
-
-if not rows:
-    rows = []
+    rows = conn.execute(text("""
+        SELECT movie_id, title, genres, release_year, synopsis, poster_url, rating, user_rating
+        FROM movies
+    """)).mappings().all()
 
 movies = []
 titles = []
 genres_list_all = []
 years = []
-
-for r in rows:
+for r in rows or []:
     raw = r["genres"] or ""
     parts = []
     for token in raw.split("|"):
         parts.extend([g.strip() for g in token.split(",") if g.strip()])
-    genres_list = parts
     movies.append(dict(r))
     titles.append(r["title"])
-    genres_list_all.append(genres_list)
+    genres_list_all.append(parts)
     years.append(r["release_year"] if r["release_year"] else 2000)
 
-# Accès rapide par titre (sensible à la casse telle que BDD)
-movies_dict = {movie["title"]: movie for movie in movies}
+movies_dict = {m["title"]: m for m in movies}
 
-def safe_mlb_transform(mlb, genre_lists):
-    try:
-        return mlb.transform(genre_lists)
-    except ValueError:
-        known = set(mlb.classes_)
-        cleaned = [[g for g in gs if g in known] for gs in genre_lists]
-        return mlb.transform(cleaned)
-
-# --- Lazy models + mmap ---
+# ======================
+# 🔁 Lazy load modèles (mmap)
+# ======================
 xgb_model = None
 mlb = None
 scaler_year = None
@@ -233,36 +124,38 @@ tfidf_matrix = None
 genres_encoded_matrix = None
 years_scaled = None
 
-def load_models():
-    """Charge paresseusement les artefacts lourds (mmap) et prépare les encodages."""
-    global xgb_model, mlb, scaler_year, nn_full, svd_full, tfidf_matrix
-    global genres_encoded_matrix, years_scaled
-
-    if xgb_model is not None:
-        return  # déjà chargés
-
-    # Imports locaux pour éviter les coûts au démarrage
-    import joblib as _joblib
-
-    # Estimator: pas forcément mmap (objet Python), ok
-    xgb_model = _joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
-
-    # Objets contenant des arrays -> mmap
-    mlb = _joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"), mmap_mode='r')
-    scaler_year = _joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"), mmap_mode='r')
-    nn_full = _joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"), mmap_mode='r')
-    svd_full = _joblib.load(os.path.join(MODEL_DIR, "svd_model.joblib"), mmap_mode='r')
-    tfidf_matrix = _joblib.load(os.path.join(MODEL_DIR, "tfidf_matrix_full.joblib"), mmap_mode='r')
-
-    # Prépare encodages nécessaires aux features
+def safe_mlb_transform(_mlb, genre_lists):
     try:
+        return _mlb.transform(genre_lists)
+    except ValueError:
+        known = set(_mlb.classes_)
+        cleaned = [[g for g in gs if g in known] for gs in genre_lists]
+        return _mlb.transform(cleaned)
+
+def load_models():
+    """Charge les artefacts à la première demande, avec mmap pour limiter la RAM."""
+    global xgb_model, mlb, scaler_year, nn_full, svd_full, tfidf_matrix, genres_encoded_matrix, years_scaled
+    if xgb_model is not None:
+        return
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    model_dir = os.path.join(base_dir, "model")
+
+    import joblib as _joblib  # import local
+
+    xgb_model    = _joblib.load(os.path.join(model_dir, "xgb_classifier_model.joblib"))  # estimator
+    mlb          = _joblib.load(os.path.join(model_dir, "mlb_model.joblib"),      mmap_mode='r')
+    scaler_year  = _joblib.load(os.path.join(model_dir, "scaler_year.joblib"),    mmap_mode='r')
+    nn_full      = _joblib.load(os.path.join(model_dir, "nn_full.joblib"),        mmap_mode='r')
+    svd_full     = _joblib.load(os.path.join(model_dir, "svd_model.joblib"),      mmap_mode='r')
+    tfidf_matrix = _joblib.load(os.path.join(model_dir, "tfidf_matrix_full.joblib"), mmap_mode='r')
+
+    # Encodages une seule fois, à la demande
+    try:
+        from numpy import array
         genres_encoded_matrix = safe_mlb_transform(mlb, genres_list_all)
+        years_scaled = scaler_year.transform(array([[y] for y in years]))
     except Exception:
         genres_encoded_matrix = None
-
-    try:
-        years_scaled = scaler_year.transform(np.array([[y] for y in years]))
-    except Exception:
         years_scaled = None
 
 # ======================
@@ -274,15 +167,14 @@ def normalize_text(text: str) -> str:
     return text.lower()
 
 def mlflow_start_inference_run(input_title: str, top_k: int):
-    # Import local de mlflow + config de l'URI et de l'expérience
+    # import local pour éviter tout coût mémoire au boot
     import mlflow
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", config.MLFLOW_TRACKING_URI))
     mlflow.set_experiment("louve_movies_monitoring")
-    # 🔒 si un run est encore actif (exception précédente / requête précédente), on le ferme
     if mlflow.active_run() is not None:
         mlflow.end_run()
-    # on renvoie l’objet contexte ActiveRun
     return mlflow.start_run(run_name=f"recommend_{input_title}")
+
 
 # ======================
 # 📦 Pydantic Models
@@ -366,6 +258,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     """
     # Charge paresseusement les modèles / matrices
     load_models()
+
+    from sklearn.metrics.pairwise import cosine_similarity
 
     # Import local mlflow pour logging
     import mlflow
@@ -988,3 +882,4 @@ async def get_user_ratings(user_name: str, limit: int = 200):
         return {"ratings": [dict(r) for r in rows]}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
