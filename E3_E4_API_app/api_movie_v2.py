@@ -39,14 +39,7 @@ from fastapi.exception_handlers import RequestValidationError
 from fastapi.exceptions import RequestValidationError
 import traceback
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc: Exception):
-    error_message = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    logger.error(f"Unhandled error: {error_message}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal Server Error", "error": str(exc)},
-    )
+
 
 STOPWORDS = {"the","of","and","a","an","la","le","les","de","des","du","et"}
 
@@ -64,6 +57,14 @@ logger = logging.getLogger("louve_api")
 # ======================
 app = FastAPI(title="🎬 API CinéNocturne")
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc: Exception):
+    error_message = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger.error(f"Unhandled error: {error_message}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "error": str(exc)},
+    )
 # ======================
 # 🧪 MLflow
 # ======================
@@ -1016,6 +1017,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
