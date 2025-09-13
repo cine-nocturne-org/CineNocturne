@@ -716,7 +716,7 @@ async def fuzzy_match(
 
 
 # -- Genres uniques (sur la BDD)
-@app.get("/genres/", include_in_schema=False, dependencies=[Depends(verify_credentials)])
+@app.get("/genres/", dependencies=[Depends(verify_credentials)])
 async def get_unique_genres():
     try:
         query = "SELECT genres FROM movies"
@@ -1038,6 +1038,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
