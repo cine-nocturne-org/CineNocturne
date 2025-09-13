@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: [ main ]
   workflow_run:
-    workflows: ["train-model"]
+    workflows: ["train-model"]   # Nom exact du workflow train
     types: [completed]
 
 jobs:
@@ -15,29 +15,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) Checkout du repo complet
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 🔥 Récupérer les modèles entraînés depuis le workflow train-model
+      # 2) Crée le dossier model si absent
+      - name: Ensure model directory exists
+        run: mkdir -p E3_E4_API_app/model
+
+      # 3) Télécharger les artefacts du training
       - name: Download trained models
         uses: actions/download-artifact@v4
         with:
           name: trained-models
           path: E3_E4_API_app/model
 
+      # 4) Debug : liste fichiers téléchargés
+      - name: Debug downloaded artifact
+        run: |
+          echo "Contenu du dossier model après téléchargement :"
+          ls -lhR E3_E4_API_app/model
+
+      # 5) Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: 3.12
 
+      # 6) Installer les dépendances
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
 
+      # 7) Lancer les tests
       - name: Run tests
         run: | 
           export PYTHONPATH=$PYTHONPATH:$(pwd)/E3_E4_API_app
@@ -48,9 +62,13 @@ jobs:
           export USER_MAX=${{ secrets.USER_MAX }}
           pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
+      # 8) Vérifier que les modèles sont présents
       - name: Verify model exists
-        run: ls -lh E3_E4_API_app/model || exit 1
+        run: |
+          echo "Vérification des fichiers .joblib :"
+          ls -lh E3_E4_API_app/model || exit 1
 
+      # 9) Déploiement Render
       - name: Deploy to Render
         if: success() && github.event_name == 'push'
         env:
