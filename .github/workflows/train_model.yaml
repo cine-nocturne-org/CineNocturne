@@ -20,26 +20,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Checkout avec LFS dès le début
-      - name: Checkout (with LFS)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
-      # 2) Setup Git user
-      - name: Setup Git user
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      # 3) Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 4) Cache pip
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -48,7 +38,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # 5) Install dependencies
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -56,61 +45,25 @@ jobs:
           pip install papermill jupyter
           pip install shap || true
 
-      # 6) Train model (execute notebook)
       - name: Train model (execute notebook)
         env:
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
           papermill E3_E4_API_app/model_reco.ipynb E3_E4_API_app/model_reco.out.ipynb
 
-      # 7) List produced artifacts
       - name: List produced artifacts
         run: ls -lh E3_E4_API_app/model || true
 
-      # 8) Upload output notebook (artifact)
-      - name: Upload output notebook (artifact)
+      - name: Upload trained models
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models
+          path: E3_E4_API_app/model/*.joblib
+          if-no-files-found: error
+
+      - name: Upload output notebook
         uses: actions/upload-artifact@v4
         with:
           name: model-training-notebook
           path: E3_E4_API_app/model_reco.out.ipynb
           if-no-files-found: warn
-
-      # 9) Ensure LFS tracking
-      - name: Ensure LFS tracking
-        run: |
-          git lfs install --local
-          git lfs track "*.joblib"
-          git add .gitattributes
-
-      # 10) Stage artifacts through LFS (renormalize)
-      - name: Stage artifacts
-        run: |
-          git add --renormalize E3_E4_API_app/model/*.joblib
-          git status
-          git diff --cached --stat
-
-      # 11) Verify artifacts are LFS pointers
-      - name: Verify LFS pointers
-        run: |
-          echo "Tracked by LFS:"
-          git lfs ls-files || true
-          cnt=$(git lfs ls-files | wc -l)
-          if [ "$cnt" -eq 0 ]; then
-            echo "::error::No LFS-tracked files found. Aborting."
-            exit 1
-          fi
-
-      # 12) Commit & push artifacts
-      - name: Commit & push model artifacts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git add E3_E4_API_app/model/*.joblib
-          git commit -m "chore(model): update trained artifacts [skip ci]" || echo "nothing to commit"
-          git push https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git HEAD:main
-
-      - name: Debug Git LFS
-        run: |
-          git lfs install --local
-          git lfs env
-          git lfs ls-files || true
