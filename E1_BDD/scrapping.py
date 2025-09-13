@@ -8,6 +8,17 @@ from sqlalchemy import Integer, String, Text, Float
 from time import sleep
 from tqdm import tqdm
 from dotenv import load_dotenv
+import argparse
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Scrapping TMDB movies")
+    parser.add_argument(
+        "--genre",
+        type=int,
+        help="ID du genre à scrapper (si absent, scrappe tous les genres)"
+    )
+    return parser.parse_args()
+
 
 # =========================
 # Config
@@ -236,17 +247,23 @@ def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
                 sleep(REQUEST_SLEEP)
     return all_movies
 
-def scrape_all_genres() -> pd.DataFrame:
+def scrape_all_genres(genre_ids: list[int] | None = None) -> pd.DataFrame:
     genre_mapping = fetch_genres()
+
+    # si aucun filtre fourni, on prend tous les genres
+    if genre_ids is None:
+        genre_ids = list(genre_mapping.keys())
+
     all_rows = []
-    for gid, gname in genre_mapping.items():
+    for gid in genre_ids:
+        gname = genre_mapping.get(gid, f"Unknown-{gid}")
         all_rows.extend(fetch_movies_by_genre(gid, gname))
 
     df = pd.DataFrame(all_rows)
     if df.empty:
         return df
 
-    # 🔁 Fusionner les genres par movie_id (union unique, séparateur '|')
+    # fusion par movie_id (ton code existant)
     def _merge_genres(s: pd.Series) -> str | None:
         vals = set()
         for g in s.dropna().astype(str):
@@ -275,6 +292,7 @@ def scrape_all_genres() -> pd.DataFrame:
 
     df_merged = df.groupby("movie_id", as_index=False).agg(agg)
     return df_merged
+
 
 # =========================
 # Sauvegarde NON destructrice + providers
@@ -380,13 +398,19 @@ def upsert_movies(df: pd.DataFrame, engine):
 # Main
 # =========================
 if __name__ == "__main__":
+    args = parse_args()
+
     if not API_KEY.strip():
         raise SystemExit("⚠️ Configure TMDB_API_KEY (env/.env).")
 
     ensure_schema(engine)
 
-    print(f"📥 Scraping TMDB (lang={LANG}) ...")
-    df_movies = scrape_all_genres()
+    if args.genre:
+        print(f"📥 Scraping uniquement le genre {args.genre} (lang={LANG}) ...")
+        df_movies = scrape_all_genres([args.genre])
+    else:
+        print(f"📥 Scraping TOUS les genres (lang={LANG}) ...")
+        df_movies = scrape_all_genres()
 
     if df_movies.empty:
         print("⚠️ Aucune donnée à insérer.")
@@ -400,3 +424,5 @@ if __name__ == "__main__":
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM movies")).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
+
+
