@@ -63,7 +63,7 @@ jobs:
           set -e
           for attempt in 1 2 3; do
             echo "▶️ Attempt $attempt for genre ${{ matrix.genre }}..."
-            python E1_BDD/scrapping_movies_fr_with_providers.py --genre ${{ matrix.genre }} && break
+            python E1_BDD/scrapping.py --genre ${{ matrix.genre }} && break
             status=$?
             echo "⚠️ Failed with status $status. Waiting 120s before retry..."
             if [ $attempt -lt 3 ]; then
