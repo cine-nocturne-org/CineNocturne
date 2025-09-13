@@ -31,13 +31,22 @@ jobs:
         with:
           name: trained-models
           path: E3_E4_API_app/model
-          run-id: ${{ github.event.workflow_run.id }}
 
       # 4) Debug : liste fichiers téléchargés
       - name: Debug downloaded artifact
         run: |
           echo "Contenu du dossier model après téléchargement :"
-          ls -lhR E3_E4_API_app/model
+          if [ -d "E3_E4_API_app/model" ]; then
+            ls -lhR E3_E4_API_app/model
+            cnt=$(ls E3_E4_API_app/model/*.joblib 2>/dev/null | wc -l)
+            if [ "$cnt" -eq 0 ]; then
+              echo "::error::Aucun fichier .joblib trouvé dans le dossier model !"
+              exit 1
+            fi
+          else
+            echo "::error::Le dossier model n'existe pas après téléchargement !"
+            exit 1
+          fi
 
       # 5) Setup Python
       - name: Setup Python
