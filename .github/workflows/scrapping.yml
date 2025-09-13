@@ -4,7 +4,7 @@ on:
   schedule:
     # Tous les jours à 20:00 UTC (= 22h Paris l'été, 21h l'hiver)
     - cron: "0 20 * * *"
-  workflow_dispatch: {}   # Permet aussi de lancer manuellement depuis l'onglet Actions
+  workflow_dispatch: {}   # Permet aussi de lancer manuellement
 
 concurrency:
   group: nightly-scrapping
@@ -13,7 +13,32 @@ concurrency:
 jobs:
   scrapping-job:
     runs-on: ubuntu-latest
-    timeout-minutes: 480   # max 8h
+    timeout-minutes: 360   # 6h max autorisé par GitHub Actions
+
+    strategy:
+      matrix:
+        # Liste d'ID TMDB des genres de films
+        genre: [
+          28,   # Action
+          12,   # Adventure
+          16,   # Animation
+          35,   # Comedy
+          80,   # Crime
+          99,   # Documentary
+          18,   # Drama
+          10751,# Family
+          14,   # Fantasy
+          36,   # History
+          27,   # Horror
+          10402,# Music
+          9648, # Mystery
+          10749,# Romance
+          878,  # Science Fiction
+          10770,# TV Movie
+          53,   # Thriller
+          10752,# War
+          37    # Western
+        ]
 
     steps:
       - name: Checkout repository
@@ -30,24 +55,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run scrapping script (with retries)
+      - name: Run scrapping script (genre ${{ matrix.genre }})
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
           set -e
           for attempt in 1 2 3; do
-            echo "▶️ Attempt $attempt..."
-            python E1_BDD/scrapping.py && break
+            echo "▶️ Attempt $attempt for genre ${{ matrix.genre }}..."
+            python E1_BDD/scrapping_movies_fr_with_providers.py --genre ${{ matrix.genre }} && break
             status=$?
             echo "⚠️ Failed with status $status. Waiting 120s before retry..."
             if [ $attempt -lt 3 ]; then
               sleep 120
             else
-              echo "❌ All retries failed."
+              echo "❌ All retries failed for genre ${{ matrix.genre }}."
               exit $status
             fi
           done
 
       - name: Done
-        run: echo "✅ Scrapping terminé à $(date -u +"%Y-%m-%d %H:%M:%S") UTC"
+        run: echo "✅ Scrapping terminé pour genre=${{ matrix.genre }} à $(date -u +"%Y-%m-%d %H:%M:%S") UTC"
