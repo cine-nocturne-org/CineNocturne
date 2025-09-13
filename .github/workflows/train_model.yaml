@@ -1,4 +1,4 @@
-# .github/workflows/train-model.yml
+# .github/workflows/train_model.yml
 name: train-model
 
 on:
