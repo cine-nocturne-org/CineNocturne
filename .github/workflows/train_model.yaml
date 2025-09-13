@@ -105,5 +105,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git commit -m "chore(model): update trained artifacts [skip ci]" || echo "nothing to commit"
+          git commit -m "chore(model): update trained artifacts" || echo "nothing to commit"
           git push
