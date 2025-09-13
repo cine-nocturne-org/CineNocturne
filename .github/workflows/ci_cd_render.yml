@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Checkout du repo complet
+      # 1) Checkout complet
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -25,26 +25,23 @@ jobs:
       - name: Ensure model directory exists
         run: mkdir -p E3_E4_API_app/model
 
-      # 3) Télécharger les artefacts du training depuis le workflow_run exact
+      # 3) Télécharger le dernier artefact disponible pour trained-models
       - name: Download trained models
-        uses: actions/download-artifact@v4
+        uses: dawidd6/action-download-artifact@v3
         with:
+          workflow: "train-model"
           name: trained-models
           path: E3_E4_API_app/model
+          # Le plugin va chercher automatiquement le dernier run complet
 
       # 4) Debug : liste fichiers téléchargés
       - name: Debug downloaded artifact
         run: |
           echo "Contenu du dossier model après téléchargement :"
-          if [ -d "E3_E4_API_app/model" ]; then
-            ls -lhR E3_E4_API_app/model
-            cnt=$(ls E3_E4_API_app/model/*.joblib 2>/dev/null | wc -l)
-            if [ "$cnt" -eq 0 ]; then
-              echo "::error::Aucun fichier .joblib trouvé dans le dossier model !"
-              exit 1
-            fi
-          else
-            echo "::error::Le dossier model n'existe pas après téléchargement !"
+          ls -lhR E3_E4_API_app/model
+          cnt=$(ls E3_E4_API_app/model/*.joblib 2>/dev/null | wc -l)
+          if [ "$cnt" -eq 0 ]; then
+            echo "::error::Aucun fichier .joblib trouvé dans le dossier model !"
             exit 1
           fi
 
@@ -54,14 +51,14 @@ jobs:
         with:
           python-version: 3.12
 
-      # 6) Installer les dépendances
+      # 6) Installer dépendances
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
 
-      # 7) Lancer les tests
+      # 7) Lancer tests
       - name: Run tests
         run: | 
           export PYTHONPATH=$PYTHONPATH:$(pwd)/E3_E4_API_app
@@ -72,7 +69,7 @@ jobs:
           export USER_MAX=${{ secrets.USER_MAX }}
           pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
-      # 8) Vérifier que les modèles sont présents
+      # 8) Vérifier modèles présents
       - name: Verify model exists
         run: |
           echo "Vérification des fichiers .joblib :"
