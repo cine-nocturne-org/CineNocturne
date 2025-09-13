@@ -1,3 +1,4 @@
+# .github/workflows/ci-cd.yml
 name: CI/CD CineNocturne API
 
 on:
@@ -14,33 +15,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Checkout + LFS
-      - name: Checkout (with LFS)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
-      - name: Enable Git LFS
-        run: |
-          git lfs install --local
-          git lfs pull
-          git lfs ls-files || true
+      # 🔥 Récupérer les modèles entraînés depuis le workflow train-model
+      - name: Download trained models
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models
+          path: E3_E4_API_app/model
 
-      # 2) Python
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: 3.12
 
-      # 3) Install deps
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
 
-      # 4) Tests
       - name: Run tests
         run: | 
           export PYTHONPATH=$PYTHONPATH:$(pwd)/E3_E4_API_app
@@ -51,7 +48,9 @@ jobs:
           export USER_MAX=${{ secrets.USER_MAX }}
           pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
-      # 5) Déploiement Render (URL conservée)
+      - name: Verify model exists
+        run: ls -lh E3_E4_API_app/model || exit 1
+
       - name: Deploy to Render
         if: success() && github.event_name == 'push'
         env:
@@ -59,6 +58,3 @@ jobs:
         run: |
           curl -X POST "https://api.render.com/deploy/srv-d2nhlbe3jp1c73cmfa00?key=T6klWYggy2c" \
             -H "Authorization: Bearer $RENDER_API_KEY"
-
-
-
