@@ -25,12 +25,13 @@ jobs:
       - name: Ensure model directory exists
         run: mkdir -p E3_E4_API_app/model
 
-      # 3) Télécharger les artefacts du training
+      # 3) Télécharger les artefacts du training depuis le workflow_run exact
       - name: Download trained models
         uses: actions/download-artifact@v4
         with:
           name: trained-models
           path: E3_E4_API_app/model
+          run-id: ${{ github.event.workflow_run.id }}
 
       # 4) Debug : liste fichiers téléchargés
       - name: Debug downloaded artifact
