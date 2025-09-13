@@ -577,11 +577,10 @@ async def log_feedback(payload: FeedbackPayload):
 
 
 # -- Fuzzy match titres
-# -- Fuzzy match titres (title + original_title)
 @app.get("/fuzzy_match/{title}", include_in_schema=False, dependencies=[Depends(verify_credentials)])
 async def fuzzy_match(
     title: str,
-    limit_sql: int = 400,
+    limit_sql: int = 400, 
     top_k: int = 10,
     score_cutoff: int = 60
 ):
@@ -590,15 +589,15 @@ async def fuzzy_match(
         raise HTTPException(status_code=400, detail="Titre vide.")
 
     # Normalisation & tokens
-    q_norm = normalize_for_match(q)
+    q_norm = normalize_text(q).replace("&", " and ")   
     tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm) if t and t not in STOPWORDS]
     if not tokens:
         tokens = [t for t in re.findall(r"[a-z0-9]+", q_norm)]
 
-    # Requêtes très courtes → augmente le rappel
-    if len(tokens) == 1 and len(tokens[0]) <= 5:
-        limit_sql = max(limit_sql, 1000)
-        score_cutoff = min(score_cutoff, 45)
+    # Requêtes très courtes => augmente le rappel
+    if len(tokens) == 1:
+        limit_sql = max(limit_sql, 800)
+        score_cutoff = min(score_cutoff, 50)
 
     # FULLTEXT en BOOLEAN MODE avec préfixes (+tok*)
     bool_query = " ".join(f"+{t}*" for t in tokens if len(t) >= 2)
@@ -630,21 +629,15 @@ async def fuzzy_match(
             except SQLAlchemyError:
                 rows = []
 
-        # 3) LIKE normalisé (accents/ponctuation/& → and/leet) sur title+original_title
+        # 3) LIKE "normalisé" (sur title + original_title)
         if not rows:
-            norm_q = re.sub(r"[^a-z0-9]+", "", q_norm)  # déjà normalize_for_match
+            norm_q = re.sub(r"[^a-z0-9]+", "", q_norm)
             try:
                 rows = conn.execute(text("""
                     SELECT movie_id, title
                     FROM movies
                     WHERE
-                        REPLACE(
-                        REPLACE(
-                        REPLACE(
-                        REPLACE(
-                        REPLACE(
-                        REPLACE(
-                        REPLACE(
+                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
                             LOWER(CONCAT_WS(' ', title, COALESCE(original_title,''))),
                         ' ', ''), '-', ''), '''', ''), ':', ''), '.', ''), ',', ''), '&', 'and'
                         ) LIKE :norm_like
@@ -653,7 +646,7 @@ async def fuzzy_match(
             except SQLAlchemyError:
                 rows = []
 
-        # 4) LIKE souple avec jokers entre tokens (sur title+original_title)
+        # 4) LIKE souple avec jokers (sur title + original_title)
         if not rows and tokens:
             like_chain = "%" + "%".join(tokens) + "%"
             try:
@@ -672,26 +665,25 @@ async def fuzzy_match(
     candidates = [r[1] for r in rows]
     id_by_title = {r[1]: r[0] for r in rows}
 
-    # Rerank avec RapidFuzz — même processor des deux côtés
+    # Rerank avec RapidFuzz
     matches = process.extract(
         query=q,
         choices=candidates,
         scorer=fuzz.WRatio,
-        processor=normalize_for_match,
         limit=top_k * 3,
         score_cutoff=int(score_cutoff)
     )
 
-    # Plus permissif si peu de résultats
+    # Si peu de résultats, on complète via partial_ratio (plus permissif)
     if len(matches) < top_k:
         extra = process.extract(
             query=q,
             choices=candidates,
             scorer=fuzz.partial_ratio,
-            processor=normalize_for_match,
             limit=top_k * 3,
-            score_cutoff=max(40, score_cutoff - 15)
+            score_cutoff=max(45, score_cutoff - 10)
         )
+        # fusion garde le meilleur score par titre
         best = {}
         for t, s, *_ in matches + extra:
             best[t] = max(best.get(t, 0), int(s))
@@ -699,7 +691,6 @@ async def fuzzy_match(
 
     out, seen = [], set()
     for item in matches:
-        # item = (title, score, idx) ou (title, score)
         t = item[0]
         s = int(item[1])
         if t in seen:
@@ -1038,6 +1029,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
