@@ -68,7 +68,9 @@ mlflow.set_experiment("louve_movies_monitoring")
 # 🗄️ Base de données
 # ======================
 DATABASE_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=3600)
 
 # Crée les tables si absentes
 with engine.begin() as conn:
@@ -712,21 +714,19 @@ async def get_unique_genres():
     try:
         query = "SELECT genres FROM movies"
         all_genres = set()
-        with engine.connect() as conn:
+        # ⚡ reconnect à chaque appel
+        with engine.begin() as conn:
             result = conn.execute(text(query)).fetchall()
             for row in result:
-                # Selon ton stockage, séparateur '|' ou ','
                 raw = row[0] or ""
-                # On accepte les 2 formats
                 parts = [g.strip() for token in raw.split("|") for g in token.split(",")]
-                parts = [g for g in parts if g]
-                all_genres.update(parts)
+                all_genres.update([g for g in parts if g])
         return sorted(all_genres)
     except SQLAlchemyError as e:
+        # Si erreur 2006 -> reconnect
+        if "2006" in str(e):
+            engine.dispose()  # force reset de toutes les connexions
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
-
 
 # -- Détails d’un film + plateformes
 @app.get("/movie-details/{title}", dependencies=[Depends(verify_credentials)])
