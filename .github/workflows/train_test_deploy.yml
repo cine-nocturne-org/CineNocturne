@@ -3,9 +3,10 @@ name: Train-Test-Deploy CineNocturne
 
 on:
   workflow_run:
-    workflows: ["Run scrapping every night"]  # Nom exact du workflow scrapping
+    workflows: ["Run scrapping every night"]
     types:
       - completed
+  workflow_dispatch: {}  # Permet lancement manuel
 
 permissions:
   contents: write
@@ -16,7 +17,7 @@ concurrency:
 
 jobs:
   train-test-deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -78,5 +79,5 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
-          curl -X POST "https://api.render.com/deploy/srv-d2nhlbe3jp1c73cmfa00?key=T6klWYggy2c" \
+          curl -X POST "https://api.render.com/deploy/srv-d2nhlbe3jp1c73cmfa00" \
             -H "Authorization: Bearer $RENDER_API_KEY"
