@@ -22,7 +22,7 @@ jobs:
 
     steps:
       # 1) Checkout avec LFS
-      - name: Checkout repository (with LFS)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -50,29 +50,32 @@ jobs:
           pip install -r requirements.txt
           pip install papermill jupyter shap pytest || true
 
-      # 5) Train model
+      # 5) Clean old models
+      - name: Clean old models
+        run: rm -f E3_E4_API_app/model/*.joblib
+
+      # 6) Train model
       - name: Train model
         env:
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
           papermill E3_E4_API_app/model_reco.ipynb E3_E4_API_app/model_reco.out.ipynb
 
-      # 6) Debug : vérifier fichiers modèles
+      # 7) Add new models to Git LFS and commit
+      - name: Add new models to Git LFS
+        run: |
+          git lfs track "E3_E4_API_app/model/*.joblib"
+          git add .gitattributes E3_E4_API_app/model/*.joblib
+          git commit -m "Update joblib models [ci skip]" || echo "No changes to commit"
+          git push origin main || echo "Push failed (possibly no new changes)"
+
+      # 8) Debug : vérifier fichiers modèles
       - name: List model files
         run: |
           echo "Fichiers modèles générés :"
           ls -lh E3_E4_API_app/model || exit 1
 
-      # 7) Commit & Push modèles dans Git LFS
-      - name: Commit and push models
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add E3_E4_API_app/model/*.joblib
-          git commit -m "Update trained models [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:${{ github.ref }}
-
-      # 8) Run tests
+      # 9) Run tests
       - name: Run tests
         run: |
           export PYTHONPATH=$PYTHONPATH:$(pwd)/E3_E4_API_app
@@ -83,9 +86,9 @@ jobs:
           export USER_MAX=${{ secrets.USER_MAX }}
           pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
-      # 9) Deploy to Render
+      # 10) Deploy to Render
       - name: Deploy to Render
-        if: success()
+        if: ${{ github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' }}
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
