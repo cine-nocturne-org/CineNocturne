@@ -21,11 +21,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Checkout
-      - name: Checkout repository
+      # 1) Checkout avec LFS
+      - name: Checkout repository (with LFS)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       # 2) Setup Python
       - name: Setup Python 3.10
@@ -62,7 +63,16 @@ jobs:
           echo "Fichiers modèles générés :"
           ls -lh E3_E4_API_app/model || exit 1
 
-      # 7) Run tests
+      # 7) Commit & Push modèles dans Git LFS
+      - name: Commit and push models
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add E3_E4_API_app/model/*.joblib
+          git commit -m "Update trained models [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref }}
+
+      # 8) Run tests
       - name: Run tests
         run: |
           export PYTHONPATH=$PYTHONPATH:$(pwd)/E3_E4_API_app
@@ -73,9 +83,9 @@ jobs:
           export USER_MAX=${{ secrets.USER_MAX }}
           pytest E3_E4_API_app/tests --maxfail=1 --disable-warnings -q
 
-      # 8) Deploy to Render
+      # 9) Deploy to Render
       - name: Deploy to Render
-        if: ${{ github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' }}
+        if: success()
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
