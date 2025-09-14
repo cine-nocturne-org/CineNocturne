@@ -75,7 +75,7 @@ jobs:
 
       # 8) Deploy to Render
       - name: Deploy to Render
-        if: success()
+        if: ${{ github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' }}
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
