@@ -59,6 +59,7 @@ jobs:
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
+          TRANSLATE_IF_MISSING: 1           # mets 1 pour traduire les synopsis vers FR si non FR
         run: |
           set -e
           for attempt in 1 2 3; do
