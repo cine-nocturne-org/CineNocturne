@@ -1,4 +1,4 @@
-# E1_BDD/scrapping_movies_fr_with_providers.py
+# E1_BDD/scrapping.py
 import os
 import time
 import requests
@@ -39,6 +39,7 @@ DETAILS_URL      = f"{BASE_URL}/movie/{{movie_id}}"
 IMAGES_URL       = f"{BASE_URL}/movie/{{movie_id}}/images"
 TRANSLATIONS_URL = f"{BASE_URL}/movie/{{movie_id}}/translations"
 PROVIDERS_URL    = f"{BASE_URL}/movie/{{movie_id}}/watch/providers"
+EXTERNAL_IDS_URL = f"{BASE_URL}/movie/{{movie_id}}/external_ids"  # NEW
 
 TRANSLATE_IF_MISSING = os.getenv("TRANSLATE_IF_MISSING", "0").lower() in {"1", "true", "yes", "on"}
 
@@ -161,6 +162,21 @@ def fetch_any_poster_url(movie_id: int, session: requests.Session) -> str | None
     file_path = select_best_poster(posters)
     return f"https://image.tmdb.org/t/p/w500{file_path}" if file_path else None
 
+def fetch_external_ids(movie_id: int, session: requests.Session) -> dict:
+    r = _get_with_retry(session, EXTERNAL_IDS_URL.format(movie_id=movie_id),
+                        params={"api_key": API_KEY})
+    if r and r.status_code == 200:
+        return r.json() or {}
+    return {}
+
+def fetch_imdb_id(movie_id: int, session: requests.Session) -> str | None:
+    try:
+        data = fetch_external_ids(movie_id, session)
+        imdb = (data.get("imdb_id") or "").strip()
+        return imdb if imdb else None
+    except Exception:
+        return None
+
 # =========================
 # Scraping
 # =========================
@@ -215,8 +231,12 @@ def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
                     else:
                         poster_url = fetch_any_poster_url(mid, session)
 
+                    # ---- External IDs (IMDB) ----
+                    imdb_id = fetch_imdb_id(mid, session) if mid else None
+
                     all_movies.append({
                         'movie_id': mid,
+                        'imdb_id': imdb_id,  # NEW
                         'title': title_fr,
                         'original_title': orig_title,
                         'release_year': release_year,
@@ -263,6 +283,7 @@ def scrape_all_genres(genre_ids: list[int] | None = None) -> pd.DataFrame:
         "original_language": "first",
         "poster_url": lambda s: next((x for x in s if x), None),
         "key_words": lambda s: join_unique([w for x in s.dropna().astype(str) for w in x.split(",")]),
+        "imdb_id": "first",  # NEW
     }
     return df.groupby("movie_id", as_index=False).agg(agg)
 
@@ -309,13 +330,45 @@ def enrich_with_providers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # =========================
+# Schema helpers (imdb_id)
+# =========================
+def ensure_imdb_column(engine):
+    """Ajoute la colonne imdb_id si absente et crée un index (portable)."""
+    with engine.begin() as conn:
+        col_exists = conn.execute(text("""
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'movies'
+              AND COLUMN_NAME = 'imdb_id'
+        """)).scalar()
+        if not col_exists:
+            conn.execute(text("ALTER TABLE movies ADD COLUMN imdb_id VARCHAR(15) NULL"))
+
+        # Vérifier si l'index existe déjà
+        idx_exists = conn.execute(text("""
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'movies'
+              AND INDEX_NAME = 'idx_movies_imdb'
+        """)).scalar()
+        if not idx_exists:
+            conn.execute(text("CREATE INDEX idx_movies_imdb ON movies(imdb_id)"))
+
+# =========================
 # UPSERT
 # =========================
 def upsert_movies(df: pd.DataFrame, engine):
     staging = 'movies_staging'
+
+    # S'assurer de la colonne/index imdb_id
+    ensure_imdb_column(engine)
+
     df.to_sql(
         staging, con=engine, if_exists='replace', index=False, dtype={
             'movie_id': Integer(),
+            'imdb_id': String(15),  # NEW
             'title': String(255),
             'original_title': String(255),
             'release_year': Integer(),
@@ -334,16 +387,18 @@ def upsert_movies(df: pd.DataFrame, engine):
     )
     upsert_sql = """
     INSERT INTO movies (
-        movie_id, title, original_title, release_year, genres, synopsis, rating,
+        movie_id, imdb_id, title, original_title, release_year, genres, synopsis, rating,
         vote_count, original_language, poster_url, key_words,
         platforms_flatrate, platforms_rent, platforms_buy, platform_link
     )
     SELECT
-        s.movie_id, s.title, s.original_title, s.release_year, s.genres, s.synopsis, s.rating,
+        s.movie_id, s.imdb_id, s.title, s.original_title, s.release_year, s.genres, s.synopsis, s.rating,
         s.vote_count, s.original_language, s.poster_url, s.key_words,
         s.platforms_flatrate, s.platforms_rent, s.platforms_buy, s.platform_link
     FROM movies_staging s
     ON DUPLICATE KEY UPDATE
+        -- n'écrase l'imdb_id que si absent côté movies
+        imdb_id = COALESCE(movies.imdb_id, NULLIF(VALUES(imdb_id), '')),
         title = IFNULL(VALUES(title), movies.title),
         original_title = IFNULL(VALUES(original_title), movies.original_title),
         release_year = IFNULL(VALUES(release_year), movies.release_year),
@@ -392,6 +447,8 @@ if __name__ == "__main__":
             missing_synopsis = conn.execute(text(
                 "SELECT COUNT(*) FROM movies WHERE synopsis IS NULL OR TRIM(synopsis)='' OR synopsis='Résumé non disponible'"
             )).scalar()
+            missing_imdb = conn.execute(text(
+                "SELECT COUNT(*) FROM movies WHERE imdb_id IS NULL OR TRIM(imdb_id)=''"
+            )).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
-        print(f"🖼️ Posters manquants: {missing_poster} | 📝 Résumés manquants: {missing_synopsis}")
-
+        print(f"🖼️ Posters manquants: {missing_poster} | 📝 Résumés manquants: {missing_synopsis} | 🔎 imdb_id manquants: {missing_imdb}")
