@@ -348,7 +348,7 @@ def upsert_movies(df: pd.DataFrame, engine):
         original_title = IFNULL(VALUES(original_title), movies.original_title),
         release_year = IFNULL(VALUES(release_year), movies.release_year),
         genres = IFNULL(VALUES(genres), movies.genres),
-        synopsis = IFNULL(NULLIF(VALUES(synopsis), ''), movies.synopsis),
+        synopsis = IFNULL(NULLIF(NULLIF(VALUES(synopsis), 'Résumé non disponible'), ''), movies.synopsis),
         rating = IFNULL(VALUES(rating), movies.rating),
         vote_count = IFNULL(VALUES(vote_count), movies.vote_count),
         original_language = IFNULL(VALUES(original_language), movies.original_language),
@@ -394,3 +394,4 @@ if __name__ == "__main__":
             )).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
         print(f"🖼️ Posters manquants: {missing_poster} | 📝 Résumés manquants: {missing_synopsis}")
+
