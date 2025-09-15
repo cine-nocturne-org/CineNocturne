@@ -24,84 +24,25 @@ def parse_args() -> argparse.Namespace:
 # =========================
 load_dotenv()
 
-API_KEY = os.getenv("TMDB_API_KEY", "")                 # clé TMDB (via secrets/env)
-COUNTRY = os.getenv("TMDB_COUNTRY", "FR")               # pays pour watch/providers
-LANG    = os.getenv("TMDB_LANGUAGE", "fr-FR")           # langue de scraping
-DATABASE_URL = os.getenv("MYSQL_URL",
-                         "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies")
+API_KEY = os.getenv("TMDB_API_KEY", "")
+COUNTRY = os.getenv("TMDB_COUNTRY", "FR")
+LANG    = os.getenv("TMDB_LANGUAGE", "fr-FR")
+DATABASE_URL = os.getenv("MYSQL_URL")
 
 REQUEST_SLEEP = float(os.getenv("REQUEST_SLEEP", "0.5"))
 
-BASE_URL      = "https://api.themoviedb.org/3"
-DISCOVER_URL  = f"{BASE_URL}/discover/movie"
-GENRE_URL     = f"{BASE_URL}/genre/movie/list"
-KEYWORDS_URL  = f"{BASE_URL}/movie/{{movie_id}}/keywords"
-DETAILS_URL   = f"{BASE_URL}/movie/{{movie_id}}"   # <-- pour fallback EN
-PROVIDERS_URL = f"{BASE_URL}/movie/{{movie_id}}/watch/providers"
+BASE_URL         = "https://api.themoviedb.org/3"
+DISCOVER_URL     = f"{BASE_URL}/discover/movie"
+GENRE_URL        = f"{BASE_URL}/genre/movie/list"
+KEYWORDS_URL     = f"{BASE_URL}/movie/{{movie_id}}/keywords"
+DETAILS_URL      = f"{BASE_URL}/movie/{{movie_id}}"
+IMAGES_URL       = f"{BASE_URL}/movie/{{movie_id}}/images"
+TRANSLATIONS_URL = f"{BASE_URL}/movie/{{movie_id}}/translations"
+PROVIDERS_URL    = f"{BASE_URL}/movie/{{movie_id}}/watch/providers"
+
+TRANSLATE_IF_MISSING = os.getenv("TRANSLATE_IF_MISSING", "0").lower() in {"1", "true", "yes", "on"}
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-
-# =========================
-# DDL
-# =========================
-DDL_MOVIES = """
-CREATE TABLE IF NOT EXISTS movies (
-  movie_id INT PRIMARY KEY,
-  title VARCHAR(255),
-  original_title VARCHAR(255),
-  release_year INT,
-  genres VARCHAR(255),
-  synopsis TEXT,
-  rating FLOAT,
-  vote_count INT,
-  original_language VARCHAR(10),
-  poster_url VARCHAR(255),
-  key_words TEXT,
-  user_rating FLOAT,
-  platforms_flatrate VARCHAR(1024),
-  platforms_rent VARCHAR(1024),
-  platforms_buy VARCHAR(1024),
-  platform_link VARCHAR(512)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-"""
-
-DDL_FULLTEXT = """
-CREATE FULLTEXT INDEX idx_movies_title_fulltext ON movies(title);
-"""
-
-def ensure_schema(engine):
-    with engine.begin() as conn:
-        conn.execute(text(DDL_MOVIES))
-        required_cols = {
-            "original_title": "VARCHAR(255)",
-            "vote_count": "INT",
-            "key_words": "TEXT",
-            "user_rating": "FLOAT",
-            "platforms_flatrate": "VARCHAR(1024)",
-            "platforms_rent": "VARCHAR(1024)",
-            "platforms_buy": "VARCHAR(1024)",
-            "platform_link": "VARCHAR(512)",
-        }
-        existing = conn.execute(text("""
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies'
-        """)).fetchall()
-        existing_cols = {row[0] for row in existing}
-        for col, ddl in required_cols.items():
-            if col not in existing_cols:
-                conn.execute(text(f"ALTER TABLE movies ADD COLUMN {col} {ddl}"))
-        has_idx = conn.execute(text("""
-            SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'movies'
-              AND INDEX_NAME = 'idx_movies_title_fulltext'
-        """)).scalar()
-        if not has_idx:
-            try:
-                conn.execute(text(DDL_FULLTEXT))
-            except Exception:
-                pass
 
 # =========================
 # Utils
@@ -113,14 +54,10 @@ def _get_with_retry(session_or_module, url, params=None, tries=3, wait=1.0):
             r = session_or_module.get(url, params=params, timeout=30)
             if r.status_code != 429:
                 return r
-            delay = wait * (2 ** i)
-            print(f"⚠️ Rate limit TMDB (429), retry dans {delay:.1f}s...")
-            time.sleep(delay)
+            time.sleep(wait * (2 ** i))
             last = r
-        except requests.RequestException as e:
-            delay = wait * (2 ** i)
-            print(f"⚠️ Erreur réseau {e.__class__.__name__}: {e}. Retry dans {delay:.1f}s...")
-            time.sleep(delay)
+        except requests.RequestException:
+            time.sleep(wait * (2 ** i))
     return last
 
 def safe_year(date_str: str | None) -> int | None:
@@ -133,7 +70,7 @@ def safe_year(date_str: str | None) -> int | None:
 
 def join_unique(items):
     dedup, seen = [], set()
-    for x in (items or []):   # <-- tolère None
+    for x in (items or []):
         x = (x or "").strip()
         if x and x not in seen:
             seen.add(x)
@@ -152,17 +89,186 @@ def fetch_genres() -> dict[int, str]:
 def fetch_keywords(movie_id: int, session: requests.Session) -> str | None:
     r = _get_with_retry(session, KEYWORDS_URL.format(movie_id=movie_id), params={"api_key": API_KEY})
     if r and r.status_code == 200:
-        keywords = r.json().get('keywords', [])
-        return join_unique([kw.get('name') for kw in keywords])
+        return join_unique([kw.get('name') for kw in r.json().get('keywords', [])])
     return None
 
-def fetch_english_title(movie_id: int, session: requests.Session) -> str | None:
+def fetch_details_lang(movie_id: int, lang: str, session: requests.Session) -> dict:
     r = _get_with_retry(session, DETAILS_URL.format(movie_id=movie_id),
-                        params={"api_key": API_KEY, "language": "en-US"})
+                        params={"api_key": API_KEY, "language": lang})
     if r and r.status_code == 200:
-        return (r.json() or {}).get("title")
-    return None
+        return r.json() or {}
+    return {}
 
+def fetch_overview_lang(movie_id: int, lang: str, session: requests.Session) -> str | None:
+    dt = fetch_details_lang(movie_id, lang, session)
+    ov = (dt.get("overview") or "").strip()
+    return ov or None
+
+def fetch_overview_any_language(movie_id: int, session: requests.Session, prefer: list[str] | None = None) -> tuple[str | None, str | None]:
+    r = _get_with_retry(session, TRANSLATIONS_URL.format(movie_id=movie_id), params={"api_key": API_KEY})
+    if not (r and r.status_code == 200):
+        return None, None
+    translations = (r.json() or {}).get("translations") or []
+    by_lang = {}
+    for t in translations:
+        lang_code = (t.get("iso_639_1") or "").strip()
+        data = t.get("data") or {}
+        ov = (data.get("overview") or "").strip()
+        if lang_code and ov:
+            by_lang[lang_code] = ov
+    if not by_lang:
+        return None, None
+    if prefer:
+        for lc in prefer:
+            if lc in by_lang:
+                return by_lang[lc], lc
+    lang_code, ov = next(iter(by_lang.items()))
+    return ov, lang_code
+
+def translate_to_fr_if_needed(text: str, src_lang_code: str | None) -> str:
+    if not text:
+        return text
+    if src_lang_code == "fr":
+        return text
+    if not TRANSLATE_IF_MISSING:
+        return text
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source="auto", target="fr").translate(text)
+    except Exception:
+        return text
+
+def select_best_poster(posters: list[dict]) -> str | None:
+    if not posters:
+        return None
+    posters_sorted = sorted(
+        posters,
+        key=lambda p: (
+            int(p.get("vote_count") or 0),
+            float(p.get("vote_average") or 0.0),
+            int(p.get("width") or 0)
+        ),
+        reverse=True
+    )
+    return posters_sorted[0].get("file_path")
+
+def fetch_any_poster_url(movie_id: int, session: requests.Session) -> str | None:
+    r = _get_with_retry(session, IMAGES_URL.format(movie_id=movie_id),
+                        params={"api_key": API_KEY, "include_image_language": "fr,en,null"})
+    if not (r and r.status_code == 200):
+        return None
+    posters = (r.json() or {}).get("posters") or []
+    file_path = select_best_poster(posters)
+    return f"https://image.tmdb.org/t/p/w500{file_path}" if file_path else None
+
+# =========================
+# Scraping
+# =========================
+def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
+    all_movies = []
+    page, total_pages = 1, 1
+    with requests.Session() as session:
+        params = {
+            "api_key": API_KEY,
+            "page": 1,
+            "with_genres": genre_id,
+            "language": LANG,
+            "watch_region": COUNTRY,
+        }
+        r = _get_with_retry(session, DISCOVER_URL, params=params)
+        if not (r and r.status_code == 200):
+            return all_movies
+        data = r.json()
+        total_pages = min(data.get('total_pages', 1), 500)
+        with tqdm(total=total_pages, desc=f"🎬 {genre_name}", unit="page", leave=False) as pbar:
+            while page <= total_pages:
+                params["page"] = page
+                r = _get_with_retry(session, DISCOVER_URL, params=params)
+                if not (r and r.status_code == 200):
+                    break
+                data = r.json()
+                for movie in data.get('results', []):
+                    mid = movie.get('id')
+                    release_year = safe_year(movie.get('release_date'))
+                    poster_path = movie.get('poster_path')
+                    keywords = fetch_keywords(mid, session) if mid else None
+                    title_fr = movie.get('title')
+                    orig_title = (movie.get('original_title') or "").strip()
+
+                    # ---- Résumé ----
+                    synopsis_final = (movie.get('overview') or '').strip()
+                    src_lang = "fr" if synopsis_final else None
+                    if not synopsis_final and mid:
+                        ov_en = fetch_overview_lang(mid, "en-US", session)
+                        if ov_en:
+                            synopsis_final, src_lang = ov_en, "en"
+                    if not synopsis_final and mid:
+                        preferred = ["es","de","it","pt","ru","ja","zh","ko","ar","tr","nl","sv","pl","no","da","fi"]
+                        ov_any, lang_code = fetch_overview_any_language(mid, session, prefer=preferred)
+                        if ov_any:
+                            synopsis_final, src_lang = ov_any, lang_code
+                    synopsis_fr = translate_to_fr_if_needed(synopsis_final, src_lang) if synopsis_final else "Résumé non disponible"
+
+                    # ---- Poster ----
+                    if poster_path:
+                        poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                    else:
+                        poster_url = fetch_any_poster_url(mid, session)
+
+                    all_movies.append({
+                        'movie_id': mid,
+                        'title': title_fr,
+                        'original_title': orig_title,
+                        'release_year': release_year,
+                        'genres': genre_name,
+                        'synopsis': synopsis_fr,
+                        'rating': round((movie.get('vote_average') or 0.0), 1),
+                        'vote_count': movie.get('vote_count') or 0,
+                        'original_language': movie.get('original_language') or 'Unknown',
+                        'poster_url': poster_url,
+                        'key_words': keywords
+                    })
+                page += 1
+                pbar.update(1)
+                sleep(REQUEST_SLEEP)
+    return all_movies
+
+def scrape_all_genres(genre_ids: list[int] | None = None) -> pd.DataFrame:
+    genre_mapping = fetch_genres()
+    if genre_ids is None:
+        genre_ids = list(genre_mapping.keys())
+    all_rows = []
+    for gid in genre_ids:
+        gname = genre_mapping.get(gid, f"Unknown-{gid}")
+        all_rows.extend(fetch_movies_by_genre(gid, gname))
+    df = pd.DataFrame(all_rows)
+    if df.empty:
+        return df
+    def _merge_genres(s: pd.Series) -> str | None:
+        vals = set()
+        for g in s.dropna().astype(str):
+            for tok in g.replace(",", "|").split("|"):
+                t = tok.strip()
+                if t:
+                    vals.add(t)
+        return "|".join(sorted(vals)) if vals else None
+    agg = {
+        "title": "first",
+        "original_title": "first",
+        "release_year": "first",
+        "genres": _merge_genres,
+        "synopsis": lambda s: next((x for x in s if x and x != "Résumé non disponible"), "Résumé non disponible"),
+        "rating": "max",
+        "vote_count": "max",
+        "original_language": "first",
+        "poster_url": lambda s: next((x for x in s if x), None),
+        "key_words": lambda s: join_unique([w for x in s.dropna().astype(str) for w in x.split(",")]),
+    }
+    return df.groupby("movie_id", as_index=False).agg(agg)
+
+# =========================
+# Providers
+# =========================
 def fetch_providers(movie_id: int, country: str = COUNTRY, session: requests.Session | None = None):
     own_session = False
     if session is None:
@@ -184,139 +290,16 @@ def fetch_providers(movie_id: int, country: str = COUNTRY, session: requests.Ses
         if own_session:
             session.close()
 
-# =========================
-# Scraping
-# =========================
-def fetch_movies_by_genre(genre_id: int, genre_name: str) -> list[dict]:
-    all_movies = []
-    page, total_pages = 1, 1
-    with requests.Session() as session:
-        params = {
-            "api_key": API_KEY,
-            "page": 1,
-            "with_genres": genre_id,
-            "language": LANG,
-            "watch_region": COUNTRY,   # <-- important
-        }
-        r = _get_with_retry(session, DISCOVER_URL, params=params)
-        if not (r and r.status_code == 200):
-            return all_movies
-
-        data = r.json()
-        total_pages = min(data.get('total_pages', 1), 500)
-        with tqdm(total=total_pages, desc=f"🎬 {genre_name}", unit="page", leave=False) as pbar:
-            while page <= total_pages:
-                params["page"] = page
-                r = _get_with_retry(session, DISCOVER_URL, params=params)
-                if not (r and r.status_code == 200):
-                    break
-                data = r.json()
-                for movie in data.get('results', []):
-                    mid = movie.get('id')
-                    release_year = safe_year(movie.get('release_date'))
-                    poster_path = movie.get('poster_path')
-                    keywords = fetch_keywords(mid, session) if mid else None
-
-                    title_fr = movie.get('title')
-                    orig_title = (movie.get('original_title') or "").strip()
-                    if (not orig_title) and mid:
-                        en = fetch_english_title(mid, session)
-                        if en:
-                            orig_title = en
-
-                    all_movies.append({
-                        'movie_id': mid,
-                        'title': title_fr,
-                        'original_title': orig_title,
-                        'release_year': release_year,
-                        'genres': genre_name,
-                        'synopsis': movie.get('overview') or 'Résumé non disponible',
-                        'rating': round((movie.get('vote_average') or 0.0), 1),
-                        'vote_count': movie.get('vote_count') or 0,
-                        'original_language': movie.get('original_language') or 'Unknown',
-                        'poster_url': f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None,
-                        'key_words': keywords
-                    })
-                page += 1
-                pbar.update(1)
-                sleep(REQUEST_SLEEP)
-    return all_movies
-
-def scrape_all_genres(genre_ids: list[int] | None = None) -> pd.DataFrame:
-    genre_mapping = fetch_genres()
-    if genre_ids is None:
-        genre_ids = list(genre_mapping.keys())
-
-    all_rows = []
-    for gid in genre_ids:
-        gname = genre_mapping.get(gid, f"Unknown-{gid}")
-        all_rows.extend(fetch_movies_by_genre(gid, gname))
-
-    df = pd.DataFrame(all_rows)
-    if df.empty:
-        return df
-
-    def _merge_genres(s: pd.Series) -> str | None:
-        vals = set()
-        for g in s.dropna().astype(str):
-            for tok in g.replace(",", "|").split("|"):
-                t = tok.strip()
-                if t:
-                    vals.add(t)
-        return "|".join(sorted(vals)) if vals else None
-
-    agg = {
-        "title": "first",
-        "original_title": "first",
-        "release_year": "first",
-        "genres": _merge_genres,
-        "synopsis": lambda s: next((x for x in s if x and x != "Résumé non disponible"), "Résumé non disponible"),
-        "rating": "max",
-        "vote_count": "max",
-        "original_language": "first",
-        "poster_url": lambda s: next((x for x in s if x), None),
-        "key_words": lambda s: join_unique([w for x in s.dropna().astype(str) for w in x.split(",")]),
-    }
-    return df.groupby("movie_id", as_index=False).agg(agg)
-
-# =========================
-# Providers enrichment
-# =========================
-def get_ids_missing_providers_in_db(engine) -> set[int]:
-    with engine.connect() as conn:
-        cols = {r[0] for r in conn.execute(text("""
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movies'
-        """)).fetchall()}
-        conds = [
-            "(platforms_flatrate IS NULL OR TRIM(platforms_flatrate)='')",
-            "(platforms_rent IS NULL OR TRIM(platforms_rent)='')",
-            "(platforms_buy IS NULL OR TRIM(platforms_buy)='')",
-            "(platform_link IS NULL OR TRIM(platform_link)='')",
-        ]
-        sql = f"SELECT movie_id FROM movies WHERE {' OR '.join(conds)}"
-        rows = conn.execute(text(sql)).fetchall()
-        return {int(r[0]) for r in rows}
-
 def enrich_with_providers(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     for col in ['platforms_flatrate', 'platforms_rent', 'platforms_buy', 'platform_link']:
         if col not in df.columns:
             df[col] = None
-    ids_missing_db = get_ids_missing_providers_in_db(engine)
-    if not ids_missing_db:
-        print("✅ Aucun provider manquant en base.")
-        return df
     ids_in_batch = set(df['movie_id'].dropna().astype(int).tolist())
-    ids_to_fetch = sorted(ids_in_batch & ids_missing_db)
-    if not ids_to_fetch:
-        print("✅ Aucun provider à compléter parmi les films scrappés.")
-        return df
-    print(f"📺 Fetch providers pour {len(ids_to_fetch)} films (région {COUNTRY})...")
+    print(f"📺 Fetch providers pour {len(ids_in_batch)} films (région {COUNTRY})...")
     with requests.Session() as session:
-        for mid in tqdm(ids_to_fetch, desc=f"🔎 Providers {COUNTRY}", unit="movie", leave=True):
+        for mid in tqdm(ids_in_batch, desc=f"🔎 Providers {COUNTRY}", unit="movie", leave=True):
             prov = fetch_providers(mid, COUNTRY, session=session)
             df.loc[df['movie_id'] == mid, 'platforms_flatrate'] = join_unique(prov.get("flatrate"))
             df.loc[df['movie_id'] == mid, 'platforms_rent'] = join_unique(prov.get("rent"))
@@ -329,7 +312,6 @@ def enrich_with_providers(df: pd.DataFrame) -> pd.DataFrame:
 # UPSERT
 # =========================
 def upsert_movies(df: pd.DataFrame, engine):
-    ensure_schema(engine)
     staging = 'movies_staging'
     df.to_sql(
         staging, con=engine, if_exists='replace', index=False, dtype={
@@ -380,8 +362,7 @@ def upsert_movies(df: pd.DataFrame, engine):
     with engine.begin() as conn:
         conn.execute(text(upsert_sql))
         conn.execute(text(f"DROP TABLE {staging};"))
-    ensure_schema(engine)
-    print("✅ UPSERT terminé : `movies` complétée, `user_rating` et index conservés.")
+    print("✅ UPSERT terminé.")
 
 # =========================
 # Main
@@ -390,7 +371,6 @@ if __name__ == "__main__":
     args = parse_args()
     if not API_KEY.strip():
         raise SystemExit("⚠️ Configure TMDB_API_KEY (env/.env).")
-    ensure_schema(engine)
     if args.genre:
         print(f"📥 Scraping uniquement le genre {args.genre} (lang={LANG}) ...")
         df_movies = scrape_all_genres([args.genre])
@@ -406,4 +386,11 @@ if __name__ == "__main__":
         upsert_movies(df_movies, engine)
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM movies")).scalar()
+            missing_poster = conn.execute(text(
+                "SELECT COUNT(*) FROM movies WHERE poster_url IS NULL OR TRIM(poster_url)=''"
+            )).scalar()
+            missing_synopsis = conn.execute(text(
+                "SELECT COUNT(*) FROM movies WHERE synopsis IS NULL OR TRIM(synopsis)='' OR synopsis='Résumé non disponible'"
+            )).scalar()
         print(f"🎉 Terminé. Total films en base: {total}")
+        print(f"🖼️ Posters manquants: {missing_poster} | 📝 Résumés manquants: {missing_synopsis}")
