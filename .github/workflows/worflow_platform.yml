@@ -1,26 +1,26 @@
-name: Scrape Streaming Catalogs by Genre (FR)
+name: Scrape Streaming Catalogs by Genre (FR, provider IDs)
 
 on:
   workflow_dispatch:
     inputs:
       country:
-        description: "TMDB country (watch_region)"
+        description: "TMDB watch_region (ex: FR)"
         required: true
         default: "FR"
       language:
-        description: "TMDB language (metadata)"
+        description: "TMDB language (ex: fr-FR)"
         required: true
         default: "fr-FR"
       platforms_csv:
-        description: "Plateformes séparées par virgules (ex: netflix,prime,hbo,apple,hulu)"
+        description: "Slugs plateformes (ex: netflix,disney,prime,apple,canal,paramount,hbo,crunchyroll)"
         required: true
-        default: "netflix,prime,hbo,apple"
+        default: "netflix,disney,prime,apple,canal,paramount,hbo,crunchyroll"
       genres_csv:
-        description: "IDs TMDB de genres séparés par virgules (ex: 28,12,16,35,18,27)"
+        description: "IDs TMDB de genres (ex: 28,12,16,35,18,27)"
         required: true
         default: "28,12,16,35,80,99,18,10751,14,36,27,10402,9648,10749,878,10770,53,10752,37"
       reset_tables:
-        description: "Réinitialiser les tables streaming avant (drop & recreate) ?"
+        description: "Drop & recreate tables streaming avant ?"
         required: true
         default: "false"
         type: choice
@@ -40,9 +40,9 @@ jobs:
       - id: mkjson
         name: Build matrix JSON
         run: |
-          # Nettoie les espaces et transforme CSV -> JSON array
           PLAT='${{ inputs.platforms_csv }}'
           GEN='${{ inputs.genres_csv }}'
+          # CSV -> JSON array de slugs / genres
           PLAT_JSON=$(jq -cn --arg csv "$PLAT" '$csv|split(",")|map(gsub("^\\s+|\\s+$";""))|map(select(length>0))')
           GEN_JSON=$(jq -cn --arg csv "$GEN" '$csv|split(",")|map(gsub("^\\s+|\\s+$";""))|map(select(length>0))')
           echo "platforms_json=$PLAT_JSON" >> "$GITHUB_OUTPUT"
@@ -67,7 +67,8 @@ jobs:
           TMDB_LANGUAGE: ${{ inputs.language }}
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
-          python E1_BDD/scrapping_platforms.py --reset
+          # Reset uniquement sur les slugs sélectionnés
+          python E1_BDD/scrapping_platforms.py --reset --platforms "${{ inputs.platforms_csv }}"
 
   prepare:
     needs: [setup-matrix, reset]
@@ -81,14 +82,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Prepare staging tables
+      - name: Prepare staging tables (*_new)
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           TMDB_COUNTRY: ${{ inputs.country }}
           TMDB_LANGUAGE: ${{ inputs.language }}
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
-          python E1_BDD/scrapping_platforms.py --prepare --platform all
+          # Crée/tronque les *_new pour les slugs fournis
+          python E1_BDD/scrapping_platforms.py --prepare --platforms "${{ inputs.platforms_csv }}"
 
   scrape:
     needs: [setup-matrix, prepare]
@@ -107,7 +109,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Scrape shard (platform × genre)
+      - name: Scrape shard (plateforme × genre) → staging
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           TMDB_COUNTRY: ${{ inputs.country }}
@@ -115,7 +117,8 @@ jobs:
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
           echo "Shard: platform=${{ matrix.platform }} genre=${{ matrix.genre }}"
-          python E1_BDD/scrapping_platforms.py --scrape-shard --platform ${{ matrix.platform }} --genre ${{ matrix.genre }}
+          # IMPORTANT: --platformS (avec S) + un seul slug
+          python E1_BDD/scrapping_platforms.py --scrape-shard --platforms "${{ matrix.platform }}" --genre "${{ matrix.genre }}"
 
   finalize:
     needs: [scrape]
@@ -136,4 +139,5 @@ jobs:
           TMDB_LANGUAGE: ${{ inputs.language }}
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
-          python E1_BDD/scrapping_platforms.py --finalize --platform all
+          # Nettoyage imdb_id, mapping movie_id via movies.imdb_id, swap atomique
+          python E1_BDD/scrapping_platforms.py --finalize --platforms "${{ inputs.platforms_csv }}"
