@@ -1,4 +1,4 @@
-# E1_BDD/manage_streaming_catalogs.py
+# E1_BDD/scrapping_platforms.py
 import os
 import re
 import time
@@ -27,20 +27,25 @@ if not API_KEY or not DATABASE_URL:
 
 BASE_URL = "https://api.themoviedb.org/3"
 DISCOVER_MOVIE_URL = f"{BASE_URL}/discover/movie"
-PROVIDERS_LIST_MOVIE_URL = f"{BASE_URL}/watch/providers/movie"
-EXTERNAL_IDS_URL = f"{BASE_URL}/movie/{{movie_id}}/external_ids"
+EXTERNAL_IDS_URL   = f"{BASE_URL}/movie/{{movie_id}}/external_ids"
 
 REQUEST_SLEEP = float(os.getenv("REQUEST_SLEEP", "0.25"))
-MAX_PAGES = 500
-TIMEOUT = 25
+MAX_PAGES     = 500
+TIMEOUT       = 25
 
-# Plateformes (table_name -> TMDB provider display name)
-TARGET_PLATFORMS = {
-    "netflix": "Netflix",
-    "prime":   "Amazon Prime Video",
-    "hulu":    "Hulu",
-    "hbo":     "Max",         # HBO Max = "Max" sur TMDB
-    "apple":   "Apple TV+",
+# ============
+# Plateformes (slug -> provider_id TMDB) — tu peux en ajouter librement
+# ============
+TARGET_PLATFORM_IDS: Dict[str, int] = {
+    "netflix":     8,
+    "disney":      337,   # Disney Plus
+    "prime":       119,   # Amazon Prime Video
+    "apple":       350,   # Apple TV+
+    "canal":       381,   # Canal+
+    "paramount":   531,   # Paramount Plus
+    "hbo":         1899,  # HBO Max (souvent "Max")
+    "crunchyroll": 283,
+    # tu peux compléter ici si besoin (arte=234, francetv=236, etc.)
 }
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -153,19 +158,8 @@ def fetch_external_imdb_id(tmdb_id: int) -> Optional[str]:
     return imdb
 
 # =========================
-# Provider discovery
+# Discover movies for a provider (by ID)
 # =========================
-def fetch_providers_map(country: str) -> Dict[str, int]:
-    r = get_with_backoff(PROVIDERS_LIST_MOVIE_URL, params={"api_key": API_KEY, "watch_region": country})
-    out = {}
-    if r and r.status_code == 200:
-        for p in (r.json() or {}).get("results", []):
-            name = (p.get("provider_name") or "").strip().lower()
-            pid = p.get("provider_id")
-            if name and pid:
-                out[name] = int(pid)
-    return out
-
 def safe_year(date_str: Optional[str]) -> Optional[int]:
     if not date_str:
         return None
@@ -233,10 +227,11 @@ CREATE TABLE IF NOT EXISTS `{tbl}` (
 ) ENGINE=InnoDB
 """
 
-def reset_streaming_tables():
-    """Drop & recreate schéma clean pour toutes les plateformes."""
+def reset_streaming_tables(slugs: List[str] | None = None):
+    """Drop & recreate schéma clean pour les plateformes demandées (ou toutes si None)."""
     ensure_movies_schema()
-    for tbl in TARGET_PLATFORMS.keys():
+    targets = slugs or list(TARGET_PLATFORM_IDS.keys())
+    for tbl in targets:
         exec_sql(f"DROP TABLE IF EXISTS `{tbl}`")
         exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl))
         exec_sql(f"CREATE INDEX idx_{tbl}_imdb ON `{tbl}`(imdb_id)")
@@ -247,7 +242,7 @@ def reset_streaming_tables():
             FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
             ON UPDATE CASCADE ON DELETE SET NULL
         """)
-    print("✅ Tables streaming réinitialisées.")
+    print(f"✅ Tables streaming réinitialisées: {', '.join(targets)}")
 
 def ensure_platform_staging(tbl: str):
     exec_sql(f"DROP TABLE IF EXISTS `{tbl}_new`")
@@ -255,6 +250,22 @@ def ensure_platform_staging(tbl: str):
     # indexes (UNIQUE sur movie_id pour dédupliquer entre shards)
     exec_sql(f"CREATE UNIQUE INDEX ux_{tbl}_new_movie ON `{tbl}_new`(movie_id)")
     exec_sql(f"CREATE INDEX idx_{tbl}_new_imdb ON `{tbl}_new`(imdb_id)")
+
+def ensure_platform_final_table(tbl: str):
+    """Crée la table finale si elle n'existe pas (utile si nouvelle plateforme)."""
+    exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl))
+    exec_sql(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_imdb ON `{tbl}`(imdb_id)")
+    exec_sql(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_movie ON `{tbl}`(movie_id)")
+    # FK (ignore si déjà là)
+    try:
+        exec_sql(f"""
+            ALTER TABLE `{tbl}`
+            ADD CONSTRAINT fk_{tbl}_movie
+            FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
+            ON UPDATE CASCADE ON DELETE SET NULL
+        """)
+    except SQLAlchemyError:
+        pass
 
 def insert_rows_staging(tbl: str, rows: List[dict]):
     if not rows:
@@ -290,14 +301,26 @@ def map_movie_ids_from_imdb(tbl: str):
 
 def swap_in_platform(tbl: str):
     with engine.begin() as conn:
+        # s'assurer que la finale existe (si plateforme ajoutée pour la 1ère fois)
+        conn.execute(text(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl)))
+        # supprimer FK avant swap pour éviter conflit
         fk_name = f"fk_{tbl}_movie"
-        if fk_exists(conn, fk_name):
-            conn.execute(text(f"ALTER TABLE `{tbl}` DROP FOREIGN KEY {fk_name}"))
+        try:
+            if fk_exists(conn, fk_name):
+                conn.execute(text(f"ALTER TABLE `{tbl}` DROP FOREIGN KEY {fk_name}"))
+        except SQLAlchemyError:
+            pass
+
+        # swap atomique
         conn.execute(text(f"RENAME TABLE `{tbl}` TO `{tbl}_old`, `{tbl}_new` TO `{tbl}`"))
+
+        # indexes (au cas où)
         if not idx_exists(conn, tbl, f"idx_{tbl}_imdb"):
             conn.execute(text(f"CREATE INDEX idx_{tbl}_imdb ON `{tbl}`(imdb_id)"))
         if not idx_exists(conn, tbl, f"idx_{tbl}_movie"):
             conn.execute(text(f"CREATE INDEX idx_{tbl}_movie ON `{tbl}`(movie_id)"))
+
+        # recréer FK
         if not fk_exists(conn, fk_name):
             conn.execute(text(f"""
                 ALTER TABLE `{tbl}`
@@ -305,25 +328,27 @@ def swap_in_platform(tbl: str):
                 FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
                 ON UPDATE CASCADE ON DELETE SET NULL
             """))
+
+        # drop old
         conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}_old`"))
 
 # =========================
-# Full scrape & replace
+# Full scrape & replace (toutes les plateformes du mapping)
 # =========================
-def run_scrape_and_replace():
+def run_scrape_and_replace(slugs: List[str] | None = None):
     ensure_movies_schema()
     ensure_cache_table()
-    providers_map = fetch_providers_map(COUNTRY)
-    if not providers_map:
-        raise SystemExit(f"⛔ Impossible de récupérer les providers TMDB pour {COUNTRY}.")
+    targets = slugs or list(TARGET_PLATFORM_IDS.keys())
 
-    for tbl, provider_display in TARGET_PLATFORMS.items():
-        pid = providers_map.get(provider_display.lower())
-        if not pid:
-            print(f"• {provider_display} indisponible en {COUNTRY} — skip {tbl}.")
+    for slug in targets:
+        if slug not in TARGET_PLATFORM_IDS:
+            print(f"• WARNING: plateforme inconnue '{slug}' — ignorée")
             continue
 
-        print(f"\n▶ {provider_display} (id={pid}) — {COUNTRY} flatrate")
+        pid = TARGET_PLATFORM_IDS[slug]
+        tbl = slug
+
+        print(f"\n▶ {slug} (provider_id={pid}) — {COUNTRY} flatrate")
         ensure_platform_staging(tbl)
 
         movies = discover_provider_movies(pid, COUNTRY, LANG)
@@ -350,8 +375,8 @@ def run_scrape_and_replace():
         map_movie_ids_from_imdb(tbl)
         swap_in_platform(tbl)
 
-        total = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
-        mapped = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
+        total   = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
+        mapped  = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
         with_imdb = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE imdb_id IS NOT NULL AND TRIM(imdb_id)<>''")
         print(f"  → {tbl}: rows={total}, with_imdb_id={with_imdb}, mapped_to_movies={mapped}")
 
@@ -363,19 +388,22 @@ def run_scrape_and_replace():
 def run_prepare(platform: str):
     ensure_movies_schema()
     ensure_cache_table()
-    targets = TARGET_PLATFORMS.keys() if platform == "all" else [platform]
-    for tbl in targets:
-        ensure_platform_staging(tbl)
+    targets = list(TARGET_PLATFORM_IDS.keys()) if platform == "all" else [platform]
+    for slug in targets:
+        if slug not in TARGET_PLATFORM_IDS:
+            print(f"• WARNING: '{slug}' inconnu — skip")
+            continue
+        ensure_platform_staging(slug)
     print("✅ Staging prêt.")
 
 def run_scrape_shard(platform: str, genre: int | None):
-    providers_map = fetch_providers_map(COUNTRY)
-    targets = TARGET_PLATFORMS.items() if platform == "all" else [(platform, TARGET_PLATFORMS[platform])]
-    for tbl, provider_display in targets:
-        pid = providers_map.get(provider_display.lower())
-        if not pid:
-            print(f"• {provider_display} indisponible — skip {tbl}.")
+    targets = list(TARGET_PLATFORM_IDS.keys()) if platform == "all" else [platform]
+    for slug in targets:
+        if slug not in TARGET_PLATFORM_IDS:
+            print(f"• WARNING: '{slug}' inconnu — skip")
             continue
+        pid = TARGET_PLATFORM_IDS[slug]
+        tbl = slug
         movies = discover_provider_movies(pid, COUNTRY, LANG, genre=genre)
         rows = []
         for mv in movies:
@@ -393,12 +421,18 @@ def run_scrape_shard(platform: str, genre: int | None):
         print(f"  → shard {tbl} genre={genre}: +{len(rows)} lignes")
 
 def run_finalize(platform: str):
-    targets = TARGET_PLATFORMS.keys() if platform == "all" else [platform]
-    for tbl in targets:
+    targets = list(TARGET_PLATFORM_IDS.keys()) if platform == "all" else [platform]
+    for slug in targets:
+        if slug not in TARGET_PLATFORM_IDS:
+            print(f"• WARNING: '{slug}' inconnu — skip")
+            continue
+        tbl = slug
+        # si la finale n'existe pas encore (nouvelle plateforme), crée-la
+        ensure_platform_final_table(tbl)
         clean_invalid_imdb(tbl)
         map_movie_ids_from_imdb(tbl)
         swap_in_platform(tbl)
-        total = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
+        total  = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
         mapped = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
         print(f"  → {tbl}: total={total}, mapped={mapped}")
     print("✅ Finalize terminé.")
@@ -407,30 +441,46 @@ def run_finalize(platform: str):
 # CLI
 # =========================
 def parse_args():
-    ap = argparse.ArgumentParser(description="Reset & scrape streaming catalogs (FR flatrate) via TMDB")
-    ap.add_argument("--reset", action="store_true", help="Réinitialise TOUTES les tables streaming (drop & recreate)")
-    ap.add_argument("--scrape", action="store_true", help="Scrape full (toutes plateformes) + swap atomique")
+    ap = argparse.ArgumentParser(description="Reset & scrape streaming catalogs (FR flatrate) via TMDB (providers par ID)")
+    ap.add_argument("--reset", action="store_true", help="Réinitialise les tables (drop & recreate) pour les plateformes choisies")
+    ap.add_argument("--scrape", action="store_true", help="Scrape full (plateformes choisies) + swap atomique")
     # Sharded
-    ap.add_argument("--prepare", action="store_true", help="Crée/tronque les tables staging *_new")
+    ap.add_argument("--prepare", action="store_true", help="Crée/tronque les tables staging *_new pour les plateformes choisies")
     ap.add_argument("--scrape-shard", action="store_true", help="Scrape un shard (plateforme × genre) vers *_new")
     ap.add_argument("--finalize", action="store_true", help="Nettoie, mappe & swap pour *_new → finales")
-    ap.add_argument("--platform", default="all", help="all|netflix|prime|hbo|apple|hulu")
+    ap.add_argument("--platforms", default="all", help="Comma-separated slugs (ex: 'netflix,disney') ou 'all'")
     ap.add_argument("--genre", type=int, help="TMDB genre id (optionnel pour shard)")
     return ap.parse_args()
+
+def parse_platforms_arg(pstr: str) -> List[str]:
+    if not pstr or pstr.strip().lower() == "all":
+        return list(TARGET_PLATFORM_IDS.keys())
+    slugs = [s.strip().lower() for s in pstr.split(",") if s.strip()]
+    # garde seulement ceux qui existent dans le mapping (warn sinon)
+    out = []
+    for s in slugs:
+        if s in TARGET_PLATFORM_IDS:
+            out.append(s)
+        else:
+            print(f"• WARNING: plateforme '{s}' non définie dans TARGET_PLATFORM_IDS — ignorée")
+    return out or list(TARGET_PLATFORM_IDS.keys())
 
 if __name__ == "__main__":
     args = parse_args()
     try:
+        selected_slugs = parse_platforms_arg(args.platforms)
+
         if args.reset:
-            reset_streaming_tables()
+            reset_streaming_tables(selected_slugs)
         if args.scrape:
-            run_scrape_and_replace()
+            run_scrape_and_replace(selected_slugs)
         if args.prepare:
-            run_prepare(args.platform)
+            run_prepare("all" if args.platforms.lower() == "all" else args.platforms)
         if args.scrape_shard:
-            run_scrape_shard(args.platform, args.genre)
+            run_scrape_shard("all" if args.platforms.lower() == "all" else args.platforms, args.genre)
         if args.finalize:
-            run_finalize(args.platform)
+            run_finalize("all" if args.platforms.lower() == "all" else args.platforms)
+
         if not (args.reset or args.scrape or args.prepare or args.scrape_shard or args.finalize):
             print("ℹ️ Utilise --reset/--scrape (full) ou --prepare/--scrape-shard/--finalize (shard).")
     except SQLAlchemyError as e:
