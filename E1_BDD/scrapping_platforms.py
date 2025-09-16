@@ -34,8 +34,7 @@ TIMEOUT       = 25
 BATCH_SIZE    = 300  # upsert par paquets
 
 # ============
-# Plateformes (slug -> provider_id TMDB)
-# (Tu peux en ajouter librement)
+# Plateformes (slug -> provider_id TMDB) — ajoute librement
 # ============
 TARGET_PLATFORM_IDS: Dict[str, int] = {
     "netflix":     8,
@@ -116,7 +115,7 @@ def fk_exists(conn, fk: str) -> bool:
     return conn.execute(text(q), {"fk": fk}).scalar() > 0
 
 # =========================
-# Movies schema & platform tables
+# Movies schema
 # =========================
 def ensure_movies_schema():
     with engine.begin() as conn:
@@ -132,26 +131,61 @@ def ensure_movies_schema():
         if not idx_exists(conn, "movies", "idx_movies_imdb"):
             conn.execute(text("CREATE INDEX idx_movies_imdb ON movies(imdb_id)"))
 
-# Table de plateforme (direct, sans staging)
-PLATFORM_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS `{tbl}` (
-    imdb_id     VARCHAR(15) NOT NULL,    -- clé technique (imdb obligatoire)
-    movie_id    INT NULL,                -- TMDB id, mappé via movies.imdb_id
-    title       VARCHAR(512) NULL,
-    release_year INT NULL,
-    rating      FLOAT NULL,
-    region      CHAR(2) NULL,
-    genres      VARCHAR(255) NULL,
-    PRIMARY KEY (imdb_id)
-) ENGINE=InnoDB
-"""
+# =========================
+# Shape idempotent des tables plateformes (n'ajoute que le manquant)
+# =========================
+def _platform_add_column_if_missing(conn, tbl: str, col: str, ddl: str):
+    if not col_exists(conn, tbl, col):
+        conn.execute(text(f"ALTER TABLE `{tbl}` ADD COLUMN {col} {ddl}"))
 
-def ensure_platform_table(tbl: str):
+def _platform_add_unique_on_imdb(conn, tbl: str):
+    # on crée un index UNIQUE (sans toucher à une PK existante) pour activer ON DUPLICATE KEY
+    if not idx_exists(conn, tbl, f"ux_{tbl}_imdb"):
+        try:
+            conn.execute(text(f"CREATE UNIQUE INDEX ux_{tbl}_imdb ON `{tbl}`(imdb_id)"))
+        except SQLAlchemyError:
+            pass  # si imdb_id n'existe pas encore, ce sera rejoué après ajout de la colonne
+
+def ensure_platform_shape(tbl: str):
+    """
+    Idempotent : ne supprime rien, n’écrase rien.
+    - crée la table si absente (schéma minimal)
+    - ajoute UNIQUEMENT les colonnes manquantes
+    - ajoute un UNIQUE INDEX sur imdb_id (sans modifier la PK)
+    - index movie_id si manquant
+    - FK vers movies(movie_id) si absente
+    """
     with engine.begin() as conn:
-        conn.execute(text(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl)))
+        # 1) crée si absente (schéma non destructif)
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS `{tbl}` (
+                imdb_id      VARCHAR(15) NULL,
+                movie_id     INT NULL,
+                title        VARCHAR(512) NULL,
+                release_year INT NULL,
+                rating       FLOAT NULL,
+                region       CHAR(2) NULL,
+                genres       VARCHAR(255) NULL
+            ) ENGINE=InnoDB
+        """))
+
+        # 2) ajoute colonnes manquantes
+        _platform_add_column_if_missing(conn, tbl, "imdb_id",      "VARCHAR(15) NULL")
+        _platform_add_column_if_missing(conn, tbl, "movie_id",     "INT NULL")
+        _platform_add_column_if_missing(conn, tbl, "title",        "VARCHAR(512) NULL")
+        _platform_add_column_if_missing(conn, tbl, "release_year", "INT NULL")
+        _platform_add_column_if_missing(conn, tbl, "rating",       "FLOAT NULL")
+        _platform_add_column_if_missing(conn, tbl, "region",       "CHAR(2) NULL")
+        _platform_add_column_if_missing(conn, tbl, "genres",       "VARCHAR(255) NULL")
+
+        # 3) index unique imdb pour l'UPSERT
+        _platform_add_unique_on_imdb(conn, tbl)
+
+        # 4) index movie_id
         if not idx_exists(conn, tbl, f"idx_{tbl}_movie"):
             conn.execute(text(f"CREATE INDEX idx_{tbl}_movie ON `{tbl}`(movie_id)"))
-        # FK movies(movie_id)
+
+        # 5) FK vers movies(movie_id)
         fk_name = f"fk_{tbl}_movie"
         if not fk_exists(conn, fk_name):
             try:
@@ -195,7 +229,7 @@ def fetch_external_imdb_id(tmdb_id: int) -> Optional[str]:
     if r and r.status_code == 200:
         raw = r.json() or {}
         val = (raw.get("imdb_id") or "").strip()
-        if re.fullmatch(r"tt\\d+", val or ""):
+        if re.fullmatch(r"tt\d+", val or ""):
             imdb = val
     cache_set_imdb(tmdb_id, imdb)
     return imdb
@@ -206,15 +240,16 @@ def fetch_external_imdb_id(tmdb_id: int) -> Optional[str]:
 def safe_year(date_str: Optional[str]) -> Optional[int]:
     if not date_str:
         return None
-    try:
-        import pandas as pd
-        y = pd.to_datetime(date_str, errors="coerce").year
-        return int(y) if pd.notna(y) else None
-    except Exception:
-        return None
+    s = str(date_str)
+    if len(s) >= 4 and s[:4].isdigit():
+        try:
+            return int(s[:4])
+        except Exception:
+            return None
+    return None
 
 def discover_provider_movies(provider_id: int, country: str, lang: str) -> List[dict]:
-    """Retourne tous les films (flatrate) disponibles pour un provider donné (toutes pages)."""
+    """Tous les films (flatrate) disponibles pour un provider donné (toutes pages)."""
     out = []
     params = {
         "api_key": API_KEY,
@@ -267,9 +302,9 @@ def chunked(iterable: Iterable, n: int) -> Iterable[List]:
     if buf:
         yield buf
 
-def upsert_platform_rows(tbl: str, rows: List[Tuple[str, int | None, str | None, int | None, float | None, str | None]]):
+def upsert_platform_rows(tbl: str, rows: List[Dict]):
     """
-    rows = list of tuples (imdb_id, movie_id, title, release_year, rating, region)
+    rows = list of dicts {imdb_id, movie_id, title, release_year, rating, region}
     genres sera backfill après map movie_id
     """
     if not rows:
@@ -314,7 +349,7 @@ def run_platform(slug: str):
 
     ensure_movies_schema()
     ensure_cache_table()
-    ensure_platform_table(slug)
+    ensure_platform_shape(slug)
 
     pid = TARGET_PLATFORM_IDS[slug]
     print(f"\n▶ {slug} (provider_id={pid}) — {COUNTRY} flatrate")
@@ -324,7 +359,7 @@ def run_platform(slug: str):
     print(f"  - Découvert: {len(movies)} films")
 
     # 2) fetch imdb_id (obligatoire) + upsert direct en batch
-    to_upsert: List[dict] = []
+    to_upsert: List[Dict] = []
     done = 0
     for mv in movies:
         tmdb_id = mv["tmdb_id"]
@@ -355,10 +390,10 @@ def run_platform(slug: str):
     backfill_genres_from_movies(slug)
 
     # 4) stats
-    total    = fetchval(f"SELECT COUNT(*) FROM `{slug}`")
-    with_imdb= fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE imdb_id IS NOT NULL AND TRIM(imdb_id)<>''")
-    mapped   = fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE movie_id IS NOT NULL")
-    with_gen = fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE genres IS NOT NULL AND TRIM(genres)<>''")
+    total     = fetchval(f"SELECT COUNT(*) FROM `{slug}`")
+    with_imdb = fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE imdb_id IS NOT NULL AND TRIM(imdb_id)<>''")
+    mapped    = fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE movie_id IS NOT NULL")
+    with_gen  = fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE genres IS NOT NULL AND TRIM(genres)<>''")
     print(f"  → {slug}: rows={total}, with_imdb_id={with_imdb}, mapped_to_movies={mapped}, with_genres={with_gen}")
     print("✅ Done.\n")
 
