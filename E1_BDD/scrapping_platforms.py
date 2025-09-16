@@ -4,10 +4,9 @@ import re
 import time
 import random
 import argparse
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Iterable, Tuple
 
 import requests
-import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
@@ -32,9 +31,11 @@ EXTERNAL_IDS_URL   = f"{BASE_URL}/movie/{{movie_id}}/external_ids"
 REQUEST_SLEEP = float(os.getenv("REQUEST_SLEEP", "0.25"))
 MAX_PAGES     = 500
 TIMEOUT       = 25
+BATCH_SIZE    = 300  # upsert par paquets
 
 # ============
-# Plateformes (slug -> provider_id TMDB) — ajoute librement si besoin
+# Plateformes (slug -> provider_id TMDB)
+# (Tu peux en ajouter librement)
 # ============
 TARGET_PLATFORM_IDS: Dict[str, int] = {
     "netflix":     8,
@@ -45,7 +46,9 @@ TARGET_PLATFORM_IDS: Dict[str, int] = {
     "paramount":   531,   # Paramount Plus
     "hbo":         1899,  # HBO Max / Max
     "crunchyroll": 283,
-    # exemples FR utiles : "arte": 234, "francetv": 236, etc.
+    # exemples FR utiles si tu veux:
+    # "arte": 234,
+    # "francetv": 236,
 }
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -53,7 +56,7 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 # =========================
 # HTTP helper with backoff
 # =========================
-def get_with_backoff(url: str, params: dict, max_tries=6, base_sleep=0.5) -> Optional[requests.Response]:
+def get_with_backoff(url: str, params: dict, max_tries=6, base_sleep=0.6) -> Optional[requests.Response]:
     for attempt in range(1, max_tries + 1):
         try:
             r = requests.get(url, params=params, timeout=TIMEOUT)
@@ -75,10 +78,8 @@ def get_with_backoff(url: str, params: dict, max_tries=6, base_sleep=0.5) -> Opt
             continue
 
         if r is not None:
-            try:
-                r.raise_for_status()
-            except Exception:
-                pass
+            # laisser lever si autre code
+            r.raise_for_status()
         break
     return None
 
@@ -115,15 +116,57 @@ def fk_exists(conn, fk: str) -> bool:
     return conn.execute(text(q), {"fk": fk}).scalar() > 0
 
 # =========================
-# Movies schema & external_ids cache
+# Movies schema & platform tables
 # =========================
 def ensure_movies_schema():
     with engine.begin() as conn:
+        # table movies au minimum
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS movies (
+                movie_id INT PRIMARY KEY
+            ) ENGINE=InnoDB
+        """))
+        # imdb_id + index si absents
         if not col_exists(conn, "movies", "imdb_id"):
             conn.execute(text("ALTER TABLE movies ADD COLUMN imdb_id VARCHAR(15) NULL"))
         if not idx_exists(conn, "movies", "idx_movies_imdb"):
             conn.execute(text("CREATE INDEX idx_movies_imdb ON movies(imdb_id)"))
 
+# Table de plateforme (direct, sans staging)
+PLATFORM_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS `{tbl}` (
+    imdb_id     VARCHAR(15) NOT NULL,    -- clé technique (imdb obligatoire)
+    movie_id    INT NULL,                -- TMDB id, mappé via movies.imdb_id
+    title       VARCHAR(512) NULL,
+    release_year INT NULL,
+    rating      FLOAT NULL,
+    region      CHAR(2) NULL,
+    genres      VARCHAR(255) NULL,
+    PRIMARY KEY (imdb_id)
+) ENGINE=InnoDB
+"""
+
+def ensure_platform_table(tbl: str):
+    with engine.begin() as conn:
+        conn.execute(text(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl)))
+        if not idx_exists(conn, tbl, f"idx_{tbl}_movie"):
+            conn.execute(text(f"CREATE INDEX idx_{tbl}_movie ON `{tbl}`(movie_id)"))
+        # FK movies(movie_id)
+        fk_name = f"fk_{tbl}_movie"
+        if not fk_exists(conn, fk_name):
+            try:
+                conn.execute(text(f"""
+                    ALTER TABLE `{tbl}`
+                    ADD CONSTRAINT {fk_name}
+                    FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
+                    ON UPDATE CASCADE ON DELETE SET NULL
+                """))
+            except SQLAlchemyError:
+                pass
+
+# =========================
+# EXTERNAL IDS (IMDB) — cache simple en BDD
+# =========================
 def ensure_cache_table():
     exec_sql("""
     CREATE TABLE IF NOT EXISTS tmdb_external_ids_cache (
@@ -164,12 +207,14 @@ def safe_year(date_str: Optional[str]) -> Optional[int]:
     if not date_str:
         return None
     try:
+        import pandas as pd
         y = pd.to_datetime(date_str, errors="coerce").year
         return int(y) if pd.notna(y) else None
     except Exception:
         return None
 
-def discover_provider_movies(provider_id: int, country: str, lang: str, genre: int | None = None) -> List[dict]:
+def discover_provider_movies(provider_id: int, country: str, lang: str) -> List[dict]:
+    """Retourne tous les films (flatrate) disponibles pour un provider donné (toutes pages)."""
     out = []
     params = {
         "api_key": API_KEY,
@@ -180,9 +225,6 @@ def discover_provider_movies(provider_id: int, country: str, lang: str, genre: i
         "sort_by": "popularity.desc",
         "page": 1
     }
-    if genre is not None:
-        params["with_genres"] = genre
-
     r = get_with_backoff(DISCOVER_MOVIE_URL, params)
     if not (r and r.status_code == 200):
         return out
@@ -213,308 +255,136 @@ def discover_provider_movies(provider_id: int, country: str, lang: str, genre: i
     return out
 
 # =========================
-# Platform tables lifecycle
+# Upsert direct (sans staging)
 # =========================
-PLATFORM_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS `{tbl}` (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    imdb_id VARCHAR(15) NULL,
-    movie_id INT NULL,                 -- TMDB id, FK -> movies(movie_id)
-    title VARCHAR(512) NULL,
-    release_year INT NULL,
-    rating FLOAT NULL,
-    region CHAR(2) NULL,
-    genres VARCHAR(255) NULL
-) ENGINE=InnoDB
-"""
+def chunked(iterable: Iterable, n: int) -> Iterable[List]:
+    buf = []
+    for x in iterable:
+        buf.append(x)
+        if len(buf) >= n:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
 
-def ensure_platform_indexes_and_fk(conn, tbl: str):
-    if not idx_exists(conn, tbl, f"idx_{tbl}_imdb"):
-        conn.execute(text(f"CREATE INDEX idx_{tbl}_imdb ON `{tbl}`(imdb_id)"))
-    if not idx_exists(conn, tbl, f"idx_{tbl}_movie"):
-        conn.execute(text(f"CREATE INDEX idx_{tbl}_movie ON `{tbl}`(movie_id)"))
-    fk_name = f"fk_{tbl}_movie"
-    if not fk_exists(conn, fk_name):
-        conn.execute(text(f"""
-            ALTER TABLE `{tbl}`
-            ADD CONSTRAINT {fk_name}
-            FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
-            ON UPDATE CASCADE ON DELETE SET NULL
-        """))
-
-def reset_streaming_tables(slugs: List[str] | None = None):
-    """Drop & recreate schéma clean pour les plateformes demandées (ou toutes si None)."""
-    ensure_movies_schema()
-    targets = slugs or list(TARGET_PLATFORM_IDS.keys())
-    for tbl in targets:
-        exec_sql(f"DROP TABLE IF EXISTS `{tbl}`")
-        exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl))
-        with engine.begin() as conn:
-            ensure_platform_indexes_and_fk(conn, tbl)
-    print(f"✅ Tables streaming réinitialisées: {', '.join(targets)}")
-
-def ensure_platform_staging(tbl: str):
-    exec_sql(f"DROP TABLE IF EXISTS `{tbl}_new`")
-    exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", f"{tbl}_new"))
-    # indexes (UNIQUE sur movie_id pour dédupliquer entre shards)
-    with engine.begin() as conn:
-        if not idx_exists(conn, f"{tbl}_new", f"ux_{tbl}_new_movie"):
-            conn.execute(text(f"CREATE UNIQUE INDEX ux_{tbl}_new_movie ON `{tbl}_new`(movie_id)"))
-        if not idx_exists(conn, f"{tbl}_new", f"idx_{tbl}_new_imdb"):
-            conn.execute(text(f"CREATE INDEX idx_{tbl}_new_imdb ON `{tbl}_new`(imdb_id)"))
-
-def ensure_platform_final_table(tbl: str):
-    """Crée la table finale si elle n'existe pas (utile si nouvelle plateforme)."""
-    exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl))
-    with engine.begin() as conn:
-        ensure_platform_indexes_and_fk(conn, tbl)
-
-def insert_rows_staging(tbl: str, rows: List[dict]):
+def upsert_platform_rows(tbl: str, rows: List[Tuple[str, int | None, str | None, int | None, float | None, str | None]]):
+    """
+    rows = list of tuples (imdb_id, movie_id, title, release_year, rating, region)
+    genres sera backfill après map movie_id
+    """
     if not rows:
         return
-    staging_tmp = f"{tbl}_tmp_{int(time.time()*1000)}"
-    try:
-        # ✅ inclure 'genres' dans l'ordre des colonnes
-        df = pd.DataFrame(rows, columns=["imdb_id","movie_id","title","release_year","rating","region","genres"])
-        df.to_sql(staging_tmp, con=engine, if_exists="replace", index=False)
-
-        inserted = fetchval(f"SELECT COUNT(*) FROM `{staging_tmp}`")
-        print(f"    - staging '{staging_tmp}': {inserted} lignes")
-
-        exec_sql(f"""
-            INSERT INTO `{tbl}_new` (imdb_id, movie_id, title, release_year, rating, region, genres)
-            SELECT imdb_id, movie_id, title, release_year, rating, region, genres FROM `{staging_tmp}`
-            ON DUPLICATE KEY UPDATE
-                title        = COALESCE(VALUES(title), `{tbl}_new`.title),
-                release_year = COALESCE(VALUES(release_year), `{tbl}_new`.release_year),
-                rating       = COALESCE(VALUES(rating), `{tbl}_new`.rating),
-                region       = COALESCE(VALUES(region), `{tbl}_new`.region),
-                genres       = COALESCE(VALUES(genres), `{tbl}_new`.genres)
-        """)
-
-        merged = fetchval(f"SELECT COUNT(*) FROM `{tbl}_new`")
-        print(f"    - merge → `{tbl}_new`: total={merged}")
-
-    finally:
-        # 🔒 Toujours nettoyer la table tmp (même en cas d'erreur)
-        try:
-            exec_sql(f"DROP TABLE IF EXISTS `{staging_tmp}`")
-        except Exception:
-            pass
-
-def clean_invalid_imdb(tbl: str):
-    exec_sql(f"""
-        UPDATE `{tbl}_new`
-        SET imdb_id = NULL
-        WHERE imdb_id IS NOT NULL AND imdb_id NOT REGEXP '^tt[0-9]+$'
-    """)
+    sql = f"""
+    INSERT INTO `{tbl}` (imdb_id, movie_id, title, release_year, rating, region)
+    VALUES (:imdb_id, :movie_id, :title, :release_year, :rating, :region)
+    ON DUPLICATE KEY UPDATE
+        title = COALESCE(VALUES(title), `{tbl}`.title),
+        release_year = COALESCE(VALUES(release_year), `{tbl}`.release_year),
+        rating = COALESCE(VALUES(rating), `{tbl}`.rating),
+        region = COALESCE(VALUES(region), `{tbl}`.region)
+    """
+    with engine.begin() as conn:
+        conn.execute(text(sql), rows)
 
 def map_movie_ids_from_imdb(tbl: str):
     exec_sql(f"""
-        UPDATE `{tbl}_new` n
-        JOIN movies m ON m.imdb_id = n.imdb_id
-        SET n.movie_id = m.movie_id
-        WHERE n.movie_id IS NULL AND n.imdb_id IS NOT NULL
+        UPDATE `{tbl}` p
+        JOIN movies m ON m.imdb_id = p.imdb_id
+        SET p.movie_id = m.movie_id
+        WHERE p.movie_id IS NULL
+          AND p.imdb_id IS NOT NULL
     """)
 
-def backfill_genres_from_movies_staging(tbl: str):
-    """Complète `{tbl}_new`.genres depuis movies.genres via movie_id."""
-    exec_sql(f"""
-        UPDATE `{tbl}_new` n
-        JOIN movies m ON m.movie_id = n.movie_id
-        SET n.genres = m.genres
-        WHERE n.movie_id IS NOT NULL AND (n.genres IS NULL OR n.genres = '')
-    """)
-
-def backfill_genres_from_movies_final(tbl: str):
-    """Sécurité: complète `{tbl}`.genres depuis movies après le swap."""
+def backfill_genres_from_movies(tbl: str):
     exec_sql(f"""
         UPDATE `{tbl}` p
         JOIN movies m ON m.movie_id = p.movie_id
         SET p.genres = m.genres
-        WHERE p.movie_id IS NOT NULL AND (p.genres IS NULL OR p.genres = '')
+        WHERE p.movie_id IS NOT NULL
+          AND (p.genres IS NULL OR p.genres = '')
     """)
 
-def swap_in_platform(tbl: str):
-    with engine.begin() as conn:
-        # s'assurer que la finale existe (si plateforme ajoutée pour la 1ère fois)
-        conn.execute(text(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl)))
-
-        # supprimer FK avant swap pour éviter conflit
-        fk_name = f"fk_{tbl}_movie"
-        try:
-            if fk_exists(conn, fk_name):
-                conn.execute(text(f"ALTER TABLE `{tbl}` DROP FOREIGN KEY {fk_name}"))
-        except SQLAlchemyError:
-            pass
-
-        # swap atomique
-        conn.execute(text(f"RENAME TABLE `{tbl}` TO `{tbl}_old`, `{tbl}_new` TO `{tbl}`"))
-
-        # indexes + FK
-        ensure_platform_indexes_and_fk(conn, tbl)
-
-        # drop old
-        conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}_old`"))
-
 # =========================
-# Full scrape & replace (toutes les plateformes du mapping)
+# Full run (UNE plateforme → table directe)
 # =========================
-def run_scrape_and_replace(slugs: List[str] | None = None):
+def run_platform(slug: str):
+    if slug not in TARGET_PLATFORM_IDS:
+        print(f"• WARNING: plateforme inconnue '{slug}' — ignorée")
+        return
+
     ensure_movies_schema()
     ensure_cache_table()
-    targets = slugs or list(TARGET_PLATFORM_IDS.keys())
+    ensure_platform_table(slug)
 
-    for slug in targets:
-        if slug not in TARGET_PLATFORM_IDS:
-            print(f"• WARNING: plateforme inconnue '{slug}' — ignorée")
+    pid = TARGET_PLATFORM_IDS[slug]
+    print(f"\n▶ {slug} (provider_id={pid}) — {COUNTRY} flatrate")
+
+    # 1) discover tous les films
+    movies = discover_provider_movies(pid, COUNTRY, LANG)
+    print(f"  - Découvert: {len(movies)} films")
+
+    # 2) fetch imdb_id (obligatoire) + upsert direct en batch
+    to_upsert: List[dict] = []
+    done = 0
+    for mv in movies:
+        tmdb_id = mv["tmdb_id"]
+        imdb = fetch_external_imdb_id(tmdb_id)
+        if not imdb:  # imdb obligatoire → on skip si absent
             continue
+        to_upsert.append({
+            "imdb_id": imdb,
+            "movie_id": None,           # sera mappé après via movies.imdb_id
+            "title": mv["title"],
+            "release_year": mv["release_year"],
+            "rating": mv["rating"],
+            "region": COUNTRY
+        })
+        if len(to_upsert) >= BATCH_SIZE:
+            upsert_platform_rows(slug, to_upsert)
+            done += len(to_upsert)
+            print(f"    upsert: {done}/{len(movies)} (imdb ok)")
+            to_upsert.clear()
 
-        pid = TARGET_PLATFORM_IDS[slug]
-        tbl = slug
+    if to_upsert:
+        upsert_platform_rows(slug, to_upsert)
+        done += len(to_upsert)
+        print(f"    upsert: {done}/{len(movies)} (final)")
 
-        print(f"\n▶ {slug} (provider_id={pid}) — {COUNTRY} flatrate")
-        ensure_platform_staging(tbl)
+    # 3) mapping + genres depuis movies
+    map_movie_ids_from_imdb(slug)
+    backfill_genres_from_movies(slug)
 
-        movies = discover_provider_movies(pid, COUNTRY, LANG)
-        print(f"  - Découvert: {len(movies)} films")
-
-        rows = []
-        for i, mv in enumerate(movies, start=1):
-            tmdb_id = mv["tmdb_id"]
-            imdb = fetch_external_imdb_id(tmdb_id)
-            rows.append({
-                "imdb_id": imdb,
-                "movie_id": tmdb_id,
-                "title": mv["title"],
-                "release_year": mv["release_year"],
-                "rating": mv["rating"],
-                "region": COUNTRY,
-                "genres": None,  # backfill après mapping
-            })
-            if i % 100 == 0:
-                print(f"    external_ids: {i}/{len(movies)}")
-            time.sleep(REQUEST_SLEEP)
-
-        insert_rows_staging(tbl, rows)
-        clean_invalid_imdb(tbl)
-        map_movie_ids_from_imdb(tbl)
-        backfill_genres_from_movies_staging(tbl)   # ✅ genres avant swap
-        swap_in_platform(tbl)
-        backfill_genres_from_movies_final(tbl)     # ✅ sécurité après swap
-
-        total     = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
-        mapped    = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
-        with_imdb = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE imdb_id IS NOT NULL AND TRIM(imdb_id)<>''")
-        with_gen  = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE genres IS NOT NULL AND TRIM(genres)<>''")
-        print(f"  → {tbl}: rows={total}, with_imdb_id={with_imdb}, mapped_to_movies={mapped}, with_genres={with_gen}")
-
-    print("\n✅ Scrape & replace terminé.")
-
-# =========================
-# Sharded pipeline (prepare / shard / finalize)
-# =========================
-def run_prepare(platform: str):
-    ensure_movies_schema()
-    ensure_cache_table()
-    targets = list(TARGET_PLATFORM_IDS.keys()) if platform == "all" else [platform]
-    for slug in targets:
-        if slug not in TARGET_PLATFORM_IDS:
-            print(f"• WARNING: '{slug}' inconnu — skip")
-            continue
-        ensure_platform_staging(slug)
-    print("✅ Staging prêt.")
-
-def run_scrape_shard(platform: str, genre: int | None):
-    targets = list(TARGET_PLATFORM_IDS.keys()) if platform == "all" else [platform]
-    for slug in targets:
-        if slug not in TARGET_PLATFORM_IDS:
-            print(f"• WARNING: '{slug}' inconnu — skip")
-            continue
-        pid = TARGET_PLATFORM_IDS[slug]
-        tbl = slug
-        movies = discover_provider_movies(pid, COUNTRY, LANG, genre=genre)
-        rows = []
-        for mv in movies:
-            tmdb_id = mv["tmdb_id"]
-            imdb = fetch_external_imdb_id(tmdb_id)
-            rows.append({
-                "imdb_id": imdb,
-                "movie_id": tmdb_id,
-                "title": mv["title"],
-                "release_year": mv["release_year"],
-                "rating": mv["rating"],
-                "region": COUNTRY,
-                "genres": None,
-            })
-        insert_rows_staging(tbl, rows)
-        print(f"  → shard {tbl} genre={genre}: +{len(rows)} lignes")
-
-def run_finalize(platform: str):
-    targets = list(TARGET_PLATFORM_IDS.keys()) if platform == "all" else [platform]
-    for slug in targets:
-        if slug not in TARGET_PLATFORM_IDS:
-            print(f"• WARNING: '{slug}' inconnu — skip")
-            continue
-        tbl = slug
-        # si la finale n'existe pas encore (nouvelle plateforme), crée-la
-        ensure_platform_final_table(tbl)
-        clean_invalid_imdb(tbl)
-        map_movie_ids_from_imdb(tbl)
-        backfill_genres_from_movies_staging(tbl)
-        swap_in_platform(tbl)
-        backfill_genres_from_movies_final(tbl)
-        total  = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
-        mapped = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
-        print(f"  → {tbl}: total={total}, mapped={mapped}")
-    print("✅ Finalize terminé.")
+    # 4) stats
+    total    = fetchval(f"SELECT COUNT(*) FROM `{slug}`")
+    with_imdb= fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE imdb_id IS NOT NULL AND TRIM(imdb_id)<>''")
+    mapped   = fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE movie_id IS NOT NULL")
+    with_gen = fetchval(f"SELECT COUNT(*) FROM `{slug}` WHERE genres IS NOT NULL AND TRIM(genres)<>''")
+    print(f"  → {slug}: rows={total}, with_imdb_id={with_imdb}, mapped_to_movies={mapped}, with_genres={with_gen}")
+    print("✅ Done.\n")
 
 # =========================
 # CLI
 # =========================
 def parse_args():
-    ap = argparse.ArgumentParser(description="Reset & scrape streaming catalogs (FR flatrate) via TMDB (providers par ID)")
-    ap.add_argument("--reset", action="store_true", help="Réinitialise les tables (drop & recreate) pour les plateformes choisies")
-    ap.add_argument("--scrape", action="store_true", help="Scrape full (plateformes choisies) + swap atomique")
-    # Sharded
-    ap.add_argument("--prepare", action="store_true", help="Crée/tronque les tables staging *_new pour les plateformes choisies")
-    ap.add_argument("--scrape-shard", action="store_true", help="Scrape un shard (plateforme × genre) vers *_new")
-    ap.add_argument("--finalize", action="store_true", help="Nettoie, mappe & swap pour *_new → finales")
-    ap.add_argument("--platforms", default="all", help="Comma-separated slugs (ex: 'netflix,disney') ou 'all'")
-    ap.add_argument("--genre", type=int, help="TMDB genre id (optionnel pour shard)")
+    ap = argparse.ArgumentParser(description="Scrape streaming catalogs (FR flatrate) via TMDB — direct, sans staging.")
+    ap.add_argument("--platform", default="all", help="slug plateforme (ex: netflix) ou 'all'")
     return ap.parse_args()
 
-def parse_platforms_arg(pstr: str) -> List[str]:
+def parse_platform_arg(pstr: str) -> List[str]:
     if not pstr or pstr.strip().lower() == "all":
         return list(TARGET_PLATFORM_IDS.keys())
-    slugs = [s.strip().lower() for s in pstr.split(",") if s.strip()]
-    out = []
-    for s in slugs:
-        if s in TARGET_PLATFORM_IDS:
-            out.append(s)
-        else:
-            print(f"• WARNING: plateforme '{s}' non définie dans TARGET_PLATFORM_IDS — ignorée")
-    return out or list(TARGET_PLATFORM_IDS.keys())
+    s = pstr.strip().lower()
+    return [s] if s in TARGET_PLATFORM_IDS else []
 
 if __name__ == "__main__":
     args = parse_args()
-    try:
-        selected_slugs = parse_platforms_arg(args.platforms)
-
-        if args.reset:
-            reset_streaming_tables(selected_slugs)
-        if args.scrape:
-            run_scrape_and_replace(selected_slugs)
-        if args.prepare:
-            run_prepare("all" if args.platforms.lower() == "all" else args.platforms)
-        if args.scrape_shard:
-            run_scrape_shard("all" if args.platforms.lower() == "all" else args.platforms, args.genre)
-        if args.finalize:
-            run_finalize("all" if args.platforms.lower() == "all" else args.platforms)
-
-        if not (args.reset or args.scrape or args.prepare or args.scrape_shard or args.finalize):
-            print("ℹ️ Utilise --reset/--scrape (full) ou --prepare/--scrape-shard/--finalize (shard).")
-    except SQLAlchemyError as e:
-        print("⛔ SQLAlchemy error:", e)
-    except Exception as e:
-        print("⛔ Unexpected error:", e)
+    slugs = parse_platform_arg(args.platform)
+    if not slugs:
+        print("ℹ️ Aucune plateforme valide fournie. Slugs possibles:", ", ".join(TARGET_PLATFORM_IDS.keys()))
+    for slug in slugs:
+        try:
+            run_platform(slug)
+        except SQLAlchemyError as e:
+            print(f"⛔ SQLAlchemy error on {slug}:", e)
+        except Exception as e:
+            print(f"⛔ Unexpected error on {slug}:", e)
