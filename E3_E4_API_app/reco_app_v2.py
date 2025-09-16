@@ -22,7 +22,7 @@ load_dotenv()
 API_URL = "https://cinenocturne.onrender.com/"
 API_TOKEN = os.getenv("API_TOKEN")
 
-st.set_page_config(page_title="Recommandation de Films", page_icon="🍿")
+st.set_page_config(page_title="CinéNocturne", page_icon="🍿")
 st.markdown("""
 <style>
 div.stButton > button { 
@@ -159,7 +159,7 @@ def main_app():
     # Header
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.title("🍿 Recommandation de Films Personnalisée")
+        st.title("🍿 CinéNocturne")
     with col2:
         st.write(f"👋 Bonjour: **{st.session_state.username}**")
         if st.button("🚪 Se déconnecter"):
@@ -170,7 +170,7 @@ def main_app():
     "✨​ Recommandations perso",
     "🎲 Suggestions aléatoires",
     "📺​ Plateformes disponibles",
-    "📈 Mon tableau de bord"
+    "📈 Profil"
     ])
 
 
@@ -178,7 +178,7 @@ def main_app():
     # Onglet 1 : Film vu + reco perso
     # ------------------------------
     with tab1:
-        st.subheader("✨ Noter un film que vous avez vu")
+        st.subheader("🎞️​ Dernier film vu :")
 
         # === Taille de page ===
         # st.select_slider(
@@ -280,7 +280,7 @@ def main_app():
             st.success(f"🎬 Film sélectionné : {chosen_film}")
         
             raw_note = st.text_input(
-                "Note (0.0 – 10.0)",
+                "Notez votre film (0.0 – 10.0) pour obtenir une recommandation",
                 placeholder="ex : 7.5",
                 key="note_text"
             )
@@ -310,7 +310,7 @@ def main_app():
 
         # === Recommandations personnalisées (avec run_id + feedback) ===
         if chosen_film:
-            st.subheader("🔍 Obtenir une recommandation personnalisée")
+            st.subheader("🔍 Obtenir des recommandations personnalisées")
             if st.button("Me recommander des films", key="btn_reco"):
                 try:
                     with start_ui_run(input_title=chosen_film, user=st.session_state.username):
@@ -650,7 +650,7 @@ def main_app():
     # Onglet 4 : Dashboard perso
     # ------------------------------
     with tab4:
-        st.subheader("📈 Mon tableau de bord")
+        st.subheader("📈 Mon Profil")
     
         user = st.session_state.get("username")
         if not user:
@@ -858,6 +858,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
