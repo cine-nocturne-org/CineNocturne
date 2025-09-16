@@ -1,9 +1,9 @@
 name: Scrape platforms (direct, no staging)
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 21 * * *"  # tous les jours 22h Paris (été) / 21h (hiver)
+    - cron: "0 0 5 * *"
+  workflow_dispatch:
 
 jobs:
   scrape-platforms:
