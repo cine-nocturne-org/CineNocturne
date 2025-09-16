@@ -50,14 +50,21 @@ def get_auth_headers():
     # L'endpoint /recommend_xgb_personalized n'est pas protégé, donc pas bloquant
     return {}
 
+# --- Helpers de test ---
 # Classe factice pour svd_full avec .transform(...)
 class _FakeSVD:
     def transform(self, X):
-        # renvoie un vecteur 2D constant, quelle que soit l'entrée (shape: (1, 2))
         X = np.asarray(X)
         n = X.shape[0] if X.ndim == 2 else 1
         return np.tile(np.array([[0.5, 0.5]]), (n, 1))
 
+# Scaler identité pour éviter l'effet MagicMock -> np.argsort
+class _IdentityScaler:
+    def transform(self, arr):
+        arr = np.asarray(arr, dtype=float)
+        return arr.reshape(-1, 1) if arr.ndim == 1 else arr
+
+@patch("api_movie_v2.scaler_proba", new=_IdentityScaler())  # ✅ normalisation neutre
 @patch("api_movie_v2.titles", new=["Zombieland", "AutreFilm"])
 @patch(
     "api_movie_v2.movies_dict",
@@ -77,11 +84,13 @@ def test_recommend_xgb_valid(mock_xgb_model, mock_nn_full):
     # xgb renvoie proba positive élevée pour 1 candidat
     mock_xgb_model.predict_proba.return_value = np.array([[0.1, 0.9]])
 
-    # kneighbors pour le candidat (on enlèvera la première distance self=0.0)
-    # shape attendue: (1, n_neighbors). On met 2 voisins -> distances [0.0, 0.1]
+    # kneighbors: 2 voisins -> distances [0.0, 0.1] (self + 1 proche)
     mock_nn_full.kneighbors.return_value = (np.array([[0.0, 0.1]]), None)
 
-    response = client.get("/recommend_xgb_personalized/Zombieland", headers=get_auth_headers())
+    # ✅ Force une similarité qui met le candidat (index 1) devant et exclut l’index 0
+    #    (mimique l'effet d'exclusion du self en le rendant très faible)
+    with patch("api_movie_v2.cosine_similarity", return_value=np.array([[-2.0, 0.99]])):
+        response = client.get("/recommend_xgb_personalized/Zombieland", headers=get_auth_headers())
     assert response.status_code == 200
     payload = response.json()
 
