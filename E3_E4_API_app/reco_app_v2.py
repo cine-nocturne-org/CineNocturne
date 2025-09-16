@@ -34,11 +34,24 @@ div.stButton > button {
 # Dictionnaire utilisateurs (login -> mdp)
 USERS = {k.replace("USER_", "").lower(): v for k, v in os.environ.items() if k.startswith("USER_")}
 
+BANNER_URL = "https://github.com/cine-nocturne-org/CineNocturne/blob/main/E3_E4_API_app/Banniere_CineNocturne.jpg?raw=true"
+
+def show_banner():
+    st.markdown("""
+    <style>
+      .banner img { border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+      .block-container { padding-top: 1rem; } /* réduit l’espace au-dessus */
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.image(BANNER_URL, use_container_width=True)
+  
 # -----------------------------
 # Fonctions de connexion
 # -----------------------------
 def login_page():
     """Affiche la page de connexion"""
+    show_banner()
     st.title("🔐 Connexion")
     st.markdown("---")
 
@@ -156,6 +169,7 @@ def reset_only_reco():
 # -----------------------------
 def main_app():
     ensure_session_defaults()
+    show_banner()
     # Header
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -858,6 +872,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
