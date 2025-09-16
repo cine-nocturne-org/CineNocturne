@@ -1,143 +1,54 @@
-name: Scrape Streaming Catalogs by Genre (FR, provider IDs)
+name: Scrape platforms (direct, no staging)
 
 on:
   workflow_dispatch:
-    inputs:
-      country:
-        description: "TMDB watch_region (ex: FR)"
-        required: true
-        default: "FR"
-      language:
-        description: "TMDB language (ex: fr-FR)"
-        required: true
-        default: "fr-FR"
-      platforms_csv:
-        description: "Slugs plateformes (ex: netflix,disney,prime,apple,canal,paramount,hbo,crunchyroll)"
-        required: true
-        default: "netflix,disney,prime,apple,canal,paramount,hbo,crunchyroll"
-      genres_csv:
-        description: "IDs TMDB de genres (ex: 28,12,16,35,18,27)"
-        required: true
-        default: "28,12,16,35,80,99,18,10751,14,36,27,10402,9648,10749,878,10770,53,10752,37"
-      reset_tables:
-        description: "Drop & recreate tables streaming avant ?"
-        required: true
-        default: "false"
-        type: choice
-        options: ["false","true"]
+  schedule:
+    - cron: "0 21 * * *"  # tous les jours 22h Paris (été) / 21h (hiver)
 
 jobs:
-  setup-matrix:
+  scrape-platforms:
     runs-on: ubuntu-latest
-    outputs:
-      platforms_json: ${{ steps.mkjson.outputs.platforms_json }}
-      genres_json: ${{ steps.mkjson.outputs.genres_json }}
-    steps:
-      - name: Ensure jq
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-      - id: mkjson
-        name: Build matrix JSON
-        run: |
-          PLAT='${{ inputs.platforms_csv }}'
-          GEN='${{ inputs.genres_csv }}'
-          # CSV -> JSON array de slugs / genres
-          PLAT_JSON=$(jq -cn --arg csv "$PLAT" '$csv|split(",")|map(gsub("^\\s+|\\s+$";""))|map(select(length>0))')
-          GEN_JSON=$(jq -cn --arg csv "$GEN" '$csv|split(",")|map(gsub("^\\s+|\\s+$";""))|map(select(length>0))')
-          echo "platforms_json=$PLAT_JSON" >> "$GITHUB_OUTPUT"
-          echo "genres_json=$GEN_JSON" >> "$GITHUB_OUTPUT"
+    timeout-minutes: 360
 
-  reset:
-    if: ${{ inputs.reset_tables == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Reset streaming tables (clean schema)
-        env:
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          TMDB_COUNTRY: ${{ inputs.country }}
-          TMDB_LANGUAGE: ${{ inputs.language }}
-          MYSQL_URL: ${{ secrets.MYSQL_URL }}
-        run: |
-          # Reset uniquement sur les slugs sélectionnés
-          python E1_BDD/scrapping_platforms.py --reset --platforms "${{ inputs.platforms_csv }}"
-
-  prepare:
-    needs: [setup-matrix, reset]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Prepare staging tables (*_new)
-        env:
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          TMDB_COUNTRY: ${{ inputs.country }}
-          TMDB_LANGUAGE: ${{ inputs.language }}
-          MYSQL_URL: ${{ secrets.MYSQL_URL }}
-        run: |
-          # Crée/tronque les *_new pour les slugs fournis
-          python E1_BDD/scrapping_platforms.py --prepare --platforms "${{ inputs.platforms_csv }}"
-
-  scrape:
-    needs: [setup-matrix, prepare]
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJson(needs.setup-matrix.outputs.platforms_json) }}
-        genre: ${{ fromJson(needs.setup-matrix.outputs.genres_json) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Scrape shard (plateforme × genre) → staging
-        env:
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          TMDB_COUNTRY: ${{ inputs.country }}
-          TMDB_LANGUAGE: ${{ inputs.language }}
-          MYSQL_URL: ${{ secrets.MYSQL_URL }}
-        run: |
-          echo "Shard: platform=${{ matrix.platform }} genre=${{ matrix.genre }}"
-          # IMPORTANT: --platformS (avec S) + un seul slug
-          python E1_BDD/scrapping_platforms.py --scrape-shard --platforms "${{ matrix.platform }}" --genre "${{ matrix.genre }}"
+        platform: [netflix, disney, prime, apple, canal, paramount, hbo, crunchyroll] 
 
-  finalize:
-    needs: [scrape]
-    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-      - name: Install dependencies
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Finalize (clean, map, swap)
+
+      - name: Run platform scrape (${{ matrix.platform }})
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          TMDB_COUNTRY: ${{ inputs.country }}
-          TMDB_LANGUAGE: ${{ inputs.language }}
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
+          TMDB_COUNTRY: FR
+          TMDB_LANGUAGE: fr-FR
         run: |
-          # Nettoyage imdb_id, mapping movie_id via movies.imdb_id, swap atomique
-          python E1_BDD/scrapping_platforms.py --finalize --platforms "${{ inputs.platforms_csv }}"
+          set -e
+          for attempt in 1 2 3; do
+            echo "▶️ Attempt $attempt for platform=${{ matrix.platform }}..."
+            python E1_BDD/scrapping_platforms.py --platform ${{ matrix.platform }} && break
+            status=$?
+            echo "⚠️ Failed with status $status. Sleeping 120s..."
+            if [ $attempt -lt 3 ]; then
+              sleep 120
+            else
+              exit $status
+            fi
+          done
+
+      - name: Done
+        run: echo "✅ Scrape done for ${{ matrix.platform }}"
