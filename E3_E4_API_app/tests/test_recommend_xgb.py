@@ -27,6 +27,8 @@ mlflow_mock.log_metric = MagicMock()
 mlflow_mock.log_table = MagicMock()
 mlflow_mock.log_artifact = MagicMock()
 mlflow_mock.log_dict = MagicMock()
+mlflow_mock.set_tracking_uri = MagicMock()
+mlflow_mock.end_run = MagicMock()  # NEW: évite une AttributeError silencieuse
 sys.modules['mlflow'] = mlflow_mock
 
 # client MLflow (pas utilisé ici, mais on sécurise)
@@ -64,7 +66,15 @@ class _IdentityScaler:
         arr = np.asarray(arr, dtype=float)
         return arr.reshape(-1, 1) if arr.ndim == 1 else arr
 
-@patch("api_movie_v2.scaler_proba", new=_IdentityScaler())  # ✅ normalisation neutre
+# NEW: loader spécialisé pour renvoyer un scaler identité UNIQUEMENT pour scaler_proba.joblib
+def _fake_joblib_load(path):
+    path = str(path)
+    if path.endswith("scaler_proba.joblib"):
+        return _IdentityScaler()
+    # pour tout le reste (xgb_model, nn_full, etc.), un faux objet suffit
+    return MagicMock()
+
+@patch("api_movie_v2.scaler_proba", new=_IdentityScaler())  # ✅ normalisation neutre (fallback si pas de reload)
 @patch("api_movie_v2.titles", new=["Zombieland", "AutreFilm"])
 @patch(
     "api_movie_v2.movies_dict",
@@ -81,16 +91,20 @@ class _IdentityScaler:
 @patch("api_movie_v2.nn_full")
 @patch("api_movie_v2.xgb_model")
 def test_recommend_xgb_valid(mock_xgb_model, mock_nn_full):
-    # xgb renvoie proba positive élevée pour 1 candidat
-    mock_xgb_model.predict_proba.return_value = np.array([[0.1, 0.9]])
+    # xgb renvoie 2 lignes de proba (une par candidat)
+    # -> candidat 0: 0.9 ; candidat 1: 0.6 sur la classe positive
+    mock_xgb_model.predict_proba.return_value = np.array([[0.1, 0.9],
+                                                          [0.4, 0.6]])
 
     # kneighbors: 2 voisins -> distances [0.0, 0.1] (self + 1 proche)
     mock_nn_full.kneighbors.return_value = (np.array([[0.0, 0.1]]), None)
 
     # ✅ Force une similarité qui met le candidat (index 1) devant et exclut l’index 0
-    #    (mimique l'effet d'exclusion du self en le rendant très faible)
     with patch("api_movie_v2.cosine_similarity", return_value=np.array([[-2.0, 0.99]])):
-        response = client.get("/recommend_xgb_personalized/Zombieland", headers=get_auth_headers())
+        # NEW: patch le joblib.load utilisé DANS l'endpoint pour renvoyer un scaler identité
+        with patch("api_movie_v2.joblib.load", side_effect=_fake_joblib_load):
+            response = client.get("/recommend_xgb_personalized/Zombieland", headers=get_auth_headers())
+
     assert response.status_code == 200
     payload = response.json()
 
