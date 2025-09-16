@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import joblib
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import MinMaxScaler
 from rapidfuzz import process, fuzz
 import unicodedata
 import random
@@ -129,6 +130,7 @@ MODEL_DIR = os.path.join(BASE_DIR, "model")
 
 # Modèles / objets
 xgb_model = joblib.load(os.path.join(MODEL_DIR, "xgb_classifier_model.joblib"))
+scaler_proba = joblib.load(os.path.join(MODEL_DIR, "scaler_proba.joblib"))
 mlb = joblib.load(os.path.join(MODEL_DIR, "mlb_model.joblib"))
 scaler_year = joblib.load(os.path.join(MODEL_DIR, "scaler_year.joblib"))
 nn_full = joblib.load(os.path.join(MODEL_DIR, "nn_full.joblib"))
@@ -371,45 +373,34 @@ async def update_rating(payload: RatingUpdate):
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
 
-
-# -- Recommandations XGB personnalisées (publique pour l’UI)
+# -- Recommandations XGB personnalisées
 @app.get("/recommend_xgb_personalized/{title}")
 async def recommend_xgb_personalized(title: str, top_k: int = 5):
-    # 1) Trouver l'index du film d'entrée
+    # 1. Index du film d'entrée
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
     except StopIteration:
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
-    # Utiliser le titre exact de la BDD (pour movies_dict)
     exact_title = titles[idx]
 
-    # 2) Démarrer un run MLflow (optionnel)
     with mlflow_start_inference_run(input_title=exact_title, top_k=top_k) as (run, ok):
-        # run_id robuste
         try:
-            if ok:
-                info = getattr(run, "info", None)
-                rid = getattr(info, "run_id", None) or getattr(run, "run_id", None)
-                run_id = str(rid or "no-mlflow")
-            else:
-                run_id = "no-mlflow"
+            run_id = str(getattr(run, "info", None).run_id if ok else "no-mlflow")
         except Exception:
             run_id = "no-mlflow"
 
-        # Helpers MLflow (no-op si ok=False)
-        def _set_tags(tags: dict):
-            if ok:
-                try: mlflow.set_tags(tags)
-                except Exception: pass
-        def _log_param(k, v):
-            if ok:
-                try: mlflow.log_param(k, v)
-                except Exception: pass
+        # Logging helpers
         def _log_metric(k, v, step=None):
             if ok:
                 try: mlflow.log_metric(k, v, step=step)
                 except Exception: pass
+
+        def _log_param(k, v):
+            if ok:
+                try: mlflow.log_param(k, v)
+                except Exception: pass
+
         def _log_table_df(df):
             if ok:
                 try:
@@ -420,44 +411,39 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                             p = os.path.join(tmpdir, "recommendations.csv")
                             df.to_csv(p, index=False)
                             mlflow.log_artifact(p)
-                except Exception:
-                    pass
-        def _log_dict(obj, path):
-            if ok:
-                try: mlflow.log_dict(obj, artifact_file=path)
                 except Exception: pass
 
-        _set_tags({"stage": "inference", "component": "xgb_recommender", "source": "api"})
         _log_param("input_title", exact_title)
-        _log_param("top_k", int(top_k))
+        _log_param("top_k", top_k)
 
-        # 3) Notes du film d'entrée
+        # 2. Données du film d’entrée
         input_movie = movies_dict.get(exact_title, {})
         input_user_rating = float(input_movie.get("user_rating") or 0.0)
         input_movie_rating = float(input_movie.get("rating") or 5.0)
+
         _log_metric("user_rating", input_user_rating)
         _log_metric("movie_rating", input_movie_rating)
 
-        # 4) Candidats par similarité TF-IDF + filtre genres
+        # 3. Candidats
         chosen_genres = set(genres_list_all[idx])
         vec = tfidf_matrix[idx].reshape(1, -1)
         cosine_sim = cosine_similarity(vec, tfidf_matrix).flatten()
-        cosine_sim[idx] = -1.0  # exclure le film lui-même
+        cosine_sim[idx] = -1.0
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
         candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
-        _log_metric("n_candidates", int(len(candidate_indices)))
+
+        _log_metric("n_candidates", len(candidate_indices))
 
         if not candidate_indices:
             return {"run_id": run_id, "recommendations": []}
 
-        # 5) Features pour XGB
+        # 4. Features
         features_list, candidate_titles = [], []
         for i in candidate_indices:
             svd_vec = svd_full.transform(tfidf_matrix[i].reshape(1, -1))
             nn_distances, _ = nn_full.kneighbors(tfidf_matrix[i].reshape(1, -1))
             sims = 1 - nn_distances[0][1:] if nn_distances.shape[1] > 1 else np.array([0.0])
-
             feature_vec = np.hstack([
                 svd_vec[0],
                 genres_encoded_matrix[i],
@@ -474,27 +460,37 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         X = np.array(features_list)
         proba = xgb_model.predict_proba(X)[:, 1]
 
-        # 6) Normalisation robuste 0–1
-        mn, mx = float(proba.min()), float(proba.max())
-        proba_scaled = (proba - mn) / (mx - mn) if mx > mn else np.ones_like(proba)
+        # 5. ⚖️ Normalisation via scaler_proba.joblib
+        try:
+            scaler_proba = joblib.load(os.path.join(MODEL_DIR, "scaler_proba.joblib"))
+            proba_scaled = scaler_proba.transform(proba.reshape(-1, 1)).flatten()
+        except Exception:
+            # fallback: min-max local
+            mn, mx = proba.min(), proba.max()
+            proba_scaled = (proba - mn) / (mx - mn) if mx > mn else np.ones_like(proba)
 
-        # 7) Top-K + construction des recos + logging par rang
+        _log_metric("raw_proba_mean", float(proba.mean()))
+        _log_metric("raw_proba_std", float(proba.std()))
+
+        # 6. Top-K + scoring
         top_idx = np.argsort(proba_scaled)[::-1][:top_k]
-
         recos, rows_for_table = [], []
+
         for rank, idx_top in enumerate(top_idx, start=1):
             mv_title = candidate_titles[idx_top]
             movie = movies_dict.get(mv_title, {})
             user_rating = float(movie.get("user_rating") or 0.0)
             movie_rating = float(movie.get("rating") or 5.0)
 
+            # ✅ Nouveau score mieux équilibré
             final_score = (
-                0.6 * float(proba_scaled[idx_top]) +
-                0.25 * (user_rating / 10.0) +
-                0.15 * (movie_rating / 10.0)
+                0.75 * float(proba_scaled[idx_top]) +
+                0.15 * (user_rating / 10.0) +
+                0.10 * (movie_rating / 10.0)
             )
             pred_label = int(final_score >= 0.5)
 
+            _log_metric("raw_proba", float(proba[idx_top]), step=rank)
             _log_metric("pred_score", float(proba_scaled[idx_top]), step=rank)
             _log_metric("final_score", float(final_score), step=rank)
 
@@ -504,7 +500,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "pred_score_scaled": float(proba_scaled[idx_top]),
                 "user_rating": user_rating,
                 "movie_rating": movie_rating,
-                "final_score": float(final_score),
+                "final_score": final_score,
                 "pred_label": pred_label,
             })
 
@@ -513,24 +509,13 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
                 "poster_url": movie.get("poster_url"),
                 "genres": movie.get("genres"),
                 "synopsis": movie.get("synopsis"),
-                "pred_score": float(final_score),
+                "pred_score": final_score,
                 "pred_label": pred_label,
             })
 
-        _log_metric("max_pred_score", float(proba_scaled.max()))
-        _log_metric("min_pred_score", float(proba_scaled.min()))
-
-        # 8) Artifacts
-        try:
-            df_recos = pd.DataFrame(rows_for_table)
-            _log_table_df(df_recos)
-            _log_dict([r["title"] for r in recos], "top_titles.json")
-        except Exception:
-            pass
+        _log_table_df(pd.DataFrame(rows_for_table))
 
         return {"run_id": run_id, "recommendations": recos}
-
-
 
 # -- Enregistrer le feedback utilisateur (like/dislike) + accuracy online
 @app.post("/log_feedback", include_in_schema=False, dependencies=[Depends(verify_credentials)])
@@ -1029,6 +1014,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
