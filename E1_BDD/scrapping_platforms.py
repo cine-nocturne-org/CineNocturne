@@ -34,7 +34,7 @@ MAX_PAGES     = 500
 TIMEOUT       = 25
 
 # ============
-# Plateformes (slug -> provider_id TMDB) — tu peux en ajouter librement
+# Plateformes (slug -> provider_id TMDB) — ajoute librement si besoin
 # ============
 TARGET_PLATFORM_IDS: Dict[str, int] = {
     "netflix":     8,
@@ -43,9 +43,9 @@ TARGET_PLATFORM_IDS: Dict[str, int] = {
     "apple":       350,   # Apple TV+
     "canal":       381,   # Canal+
     "paramount":   531,   # Paramount Plus
-    "hbo":         1899,  # HBO Max (souvent "Max")
+    "hbo":         1899,  # HBO Max / Max
     "crunchyroll": 283,
-    # tu peux compléter ici si besoin (arte=234, francetv=236, etc.)
+    # exemples FR utiles : "arte": 234, "francetv": 236, etc.
 }
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -219,13 +219,28 @@ PLATFORM_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS `{tbl}` (
     id INT AUTO_INCREMENT PRIMARY KEY,
     imdb_id VARCHAR(15) NULL,
-    movie_id INT NULL,                 -- TMDB id, FK vers movies(movie_id)
+    movie_id INT NULL,                 -- TMDB id, FK -> movies(movie_id)
     title VARCHAR(512) NULL,
     release_year INT NULL,
     rating FLOAT NULL,
-    region CHAR(2) NULL
+    region CHAR(2) NULL,
+    genres VARCHAR(255) NULL
 ) ENGINE=InnoDB
 """
+
+def ensure_platform_indexes_and_fk(conn, tbl: str):
+    if not idx_exists(conn, tbl, f"idx_{tbl}_imdb"):
+        conn.execute(text(f"CREATE INDEX idx_{tbl}_imdb ON `{tbl}`(imdb_id)"))
+    if not idx_exists(conn, tbl, f"idx_{tbl}_movie"):
+        conn.execute(text(f"CREATE INDEX idx_{tbl}_movie ON `{tbl}`(movie_id)"))
+    fk_name = f"fk_{tbl}_movie"
+    if not fk_exists(conn, fk_name):
+        conn.execute(text(f"""
+            ALTER TABLE `{tbl}`
+            ADD CONSTRAINT {fk_name}
+            FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
+            ON UPDATE CASCADE ON DELETE SET NULL
+        """))
 
 def reset_streaming_tables(slugs: List[str] | None = None):
     """Drop & recreate schéma clean pour les plateformes demandées (ou toutes si None)."""
@@ -234,55 +249,58 @@ def reset_streaming_tables(slugs: List[str] | None = None):
     for tbl in targets:
         exec_sql(f"DROP TABLE IF EXISTS `{tbl}`")
         exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl))
-        exec_sql(f"CREATE INDEX idx_{tbl}_imdb ON `{tbl}`(imdb_id)")
-        exec_sql(f"CREATE INDEX idx_{tbl}_movie ON `{tbl}`(movie_id)")
-        exec_sql(f"""
-            ALTER TABLE `{tbl}`
-            ADD CONSTRAINT fk_{tbl}_movie
-            FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
-            ON UPDATE CASCADE ON DELETE SET NULL
-        """)
+        with engine.begin() as conn:
+            ensure_platform_indexes_and_fk(conn, tbl)
     print(f"✅ Tables streaming réinitialisées: {', '.join(targets)}")
 
 def ensure_platform_staging(tbl: str):
     exec_sql(f"DROP TABLE IF EXISTS `{tbl}_new`")
     exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", f"{tbl}_new"))
     # indexes (UNIQUE sur movie_id pour dédupliquer entre shards)
-    exec_sql(f"CREATE UNIQUE INDEX ux_{tbl}_new_movie ON `{tbl}_new`(movie_id)")
-    exec_sql(f"CREATE INDEX idx_{tbl}_new_imdb ON `{tbl}_new`(imdb_id)")
+    with engine.begin() as conn:
+        if not idx_exists(conn, f"{tbl}_new", f"ux_{tbl}_new_movie"):
+            conn.execute(text(f"CREATE UNIQUE INDEX ux_{tbl}_new_movie ON `{tbl}_new`(movie_id)"))
+        if not idx_exists(conn, f"{tbl}_new", f"idx_{tbl}_new_imdb"):
+            conn.execute(text(f"CREATE INDEX idx_{tbl}_new_imdb ON `{tbl}_new`(imdb_id)"))
 
 def ensure_platform_final_table(tbl: str):
     """Crée la table finale si elle n'existe pas (utile si nouvelle plateforme)."""
     exec_sql(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl))
-    exec_sql(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_imdb ON `{tbl}`(imdb_id)")
-    exec_sql(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_movie ON `{tbl}`(movie_id)")
-    # FK (ignore si déjà là)
-    try:
-        exec_sql(f"""
-            ALTER TABLE `{tbl}`
-            ADD CONSTRAINT fk_{tbl}_movie
-            FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
-            ON UPDATE CASCADE ON DELETE SET NULL
-        """)
-    except SQLAlchemyError:
-        pass
+    with engine.begin() as conn:
+        ensure_platform_indexes_and_fk(conn, tbl)
 
 def insert_rows_staging(tbl: str, rows: List[dict]):
     if not rows:
         return
     staging_tmp = f"{tbl}_tmp_{int(time.time()*1000)}"
-    df = pd.DataFrame(rows, columns=["imdb_id","movie_id","title","release_year","rating","region"])
-    df.to_sql(staging_tmp, con=engine, if_exists="replace", index=False)
-    exec_sql(f"""
-        INSERT INTO `{tbl}_new` (imdb_id, movie_id, title, release_year, rating, region)
-        SELECT imdb_id, movie_id, title, release_year, rating, region FROM `{staging_tmp}`
-        ON DUPLICATE KEY UPDATE
-            title = COALESCE(VALUES(title), `{tbl}_new`.title),
-            release_year = COALESCE(VALUES(release_year), `{tbl}_new`.release_year),
-            rating = COALESCE(VALUES(rating), `{tbl}_new`.rating),
-            region = COALESCE(VALUES(region), `{tbl}_new`.region)
-    """)
-    exec_sql(f"DROP TABLE `{staging_tmp}`")
+    try:
+        # ✅ inclure 'genres' dans l'ordre des colonnes
+        df = pd.DataFrame(rows, columns=["imdb_id","movie_id","title","release_year","rating","region","genres"])
+        df.to_sql(staging_tmp, con=engine, if_exists="replace", index=False)
+
+        inserted = fetchval(f"SELECT COUNT(*) FROM `{staging_tmp}`")
+        print(f"    - staging '{staging_tmp}': {inserted} lignes")
+
+        exec_sql(f"""
+            INSERT INTO `{tbl}_new` (imdb_id, movie_id, title, release_year, rating, region, genres)
+            SELECT imdb_id, movie_id, title, release_year, rating, region, genres FROM `{staging_tmp}`
+            ON DUPLICATE KEY UPDATE
+                title        = COALESCE(VALUES(title), `{tbl}_new`.title),
+                release_year = COALESCE(VALUES(release_year), `{tbl}_new`.release_year),
+                rating       = COALESCE(VALUES(rating), `{tbl}_new`.rating),
+                region       = COALESCE(VALUES(region), `{tbl}_new`.region),
+                genres       = COALESCE(VALUES(genres), `{tbl}_new`.genres)
+        """)
+
+        merged = fetchval(f"SELECT COUNT(*) FROM `{tbl}_new`")
+        print(f"    - merge → `{tbl}_new`: total={merged}")
+
+    finally:
+        # 🔒 Toujours nettoyer la table tmp (même en cas d'erreur)
+        try:
+            exec_sql(f"DROP TABLE IF EXISTS `{staging_tmp}`")
+        except Exception:
+            pass
 
 def clean_invalid_imdb(tbl: str):
     exec_sql(f"""
@@ -299,10 +317,29 @@ def map_movie_ids_from_imdb(tbl: str):
         WHERE n.movie_id IS NULL AND n.imdb_id IS NOT NULL
     """)
 
+def backfill_genres_from_movies_staging(tbl: str):
+    """Complète `{tbl}_new`.genres depuis movies.genres via movie_id."""
+    exec_sql(f"""
+        UPDATE `{tbl}_new` n
+        JOIN movies m ON m.movie_id = n.movie_id
+        SET n.genres = m.genres
+        WHERE n.movie_id IS NOT NULL AND (n.genres IS NULL OR n.genres = '')
+    """)
+
+def backfill_genres_from_movies_final(tbl: str):
+    """Sécurité: complète `{tbl}`.genres depuis movies après le swap."""
+    exec_sql(f"""
+        UPDATE `{tbl}` p
+        JOIN movies m ON m.movie_id = p.movie_id
+        SET p.genres = m.genres
+        WHERE p.movie_id IS NOT NULL AND (p.genres IS NULL OR p.genres = '')
+    """)
+
 def swap_in_platform(tbl: str):
     with engine.begin() as conn:
         # s'assurer que la finale existe (si plateforme ajoutée pour la 1ère fois)
         conn.execute(text(PLATFORM_SCHEMA_SQL.replace("{tbl}", tbl)))
+
         # supprimer FK avant swap pour éviter conflit
         fk_name = f"fk_{tbl}_movie"
         try:
@@ -314,20 +351,8 @@ def swap_in_platform(tbl: str):
         # swap atomique
         conn.execute(text(f"RENAME TABLE `{tbl}` TO `{tbl}_old`, `{tbl}_new` TO `{tbl}`"))
 
-        # indexes (au cas où)
-        if not idx_exists(conn, tbl, f"idx_{tbl}_imdb"):
-            conn.execute(text(f"CREATE INDEX idx_{tbl}_imdb ON `{tbl}`(imdb_id)"))
-        if not idx_exists(conn, tbl, f"idx_{tbl}_movie"):
-            conn.execute(text(f"CREATE INDEX idx_{tbl}_movie ON `{tbl}`(movie_id)"))
-
-        # recréer FK
-        if not fk_exists(conn, fk_name):
-            conn.execute(text(f"""
-                ALTER TABLE `{tbl}`
-                ADD CONSTRAINT {fk_name}
-                FOREIGN KEY (movie_id) REFERENCES movies(movie_id)
-                ON UPDATE CASCADE ON DELETE SET NULL
-            """))
+        # indexes + FK
+        ensure_platform_indexes_and_fk(conn, tbl)
 
         # drop old
         conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}_old`"))
@@ -364,7 +389,8 @@ def run_scrape_and_replace(slugs: List[str] | None = None):
                 "title": mv["title"],
                 "release_year": mv["release_year"],
                 "rating": mv["rating"],
-                "region": COUNTRY
+                "region": COUNTRY,
+                "genres": None,  # backfill après mapping
             })
             if i % 100 == 0:
                 print(f"    external_ids: {i}/{len(movies)}")
@@ -373,12 +399,15 @@ def run_scrape_and_replace(slugs: List[str] | None = None):
         insert_rows_staging(tbl, rows)
         clean_invalid_imdb(tbl)
         map_movie_ids_from_imdb(tbl)
+        backfill_genres_from_movies_staging(tbl)   # ✅ genres avant swap
         swap_in_platform(tbl)
+        backfill_genres_from_movies_final(tbl)     # ✅ sécurité après swap
 
-        total   = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
-        mapped  = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
+        total     = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
+        mapped    = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
         with_imdb = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE imdb_id IS NOT NULL AND TRIM(imdb_id)<>''")
-        print(f"  → {tbl}: rows={total}, with_imdb_id={with_imdb}, mapped_to_movies={mapped}")
+        with_gen  = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE genres IS NOT NULL AND TRIM(genres)<>''")
+        print(f"  → {tbl}: rows={total}, with_imdb_id={with_imdb}, mapped_to_movies={mapped}, with_genres={with_gen}")
 
     print("\n✅ Scrape & replace terminé.")
 
@@ -415,7 +444,8 @@ def run_scrape_shard(platform: str, genre: int | None):
                 "title": mv["title"],
                 "release_year": mv["release_year"],
                 "rating": mv["rating"],
-                "region": COUNTRY
+                "region": COUNTRY,
+                "genres": None,
             })
         insert_rows_staging(tbl, rows)
         print(f"  → shard {tbl} genre={genre}: +{len(rows)} lignes")
@@ -431,7 +461,9 @@ def run_finalize(platform: str):
         ensure_platform_final_table(tbl)
         clean_invalid_imdb(tbl)
         map_movie_ids_from_imdb(tbl)
+        backfill_genres_from_movies_staging(tbl)
         swap_in_platform(tbl)
+        backfill_genres_from_movies_final(tbl)
         total  = fetchval(f"SELECT COUNT(*) FROM `{tbl}`")
         mapped = fetchval(f"SELECT COUNT(*) FROM `{tbl}` WHERE movie_id IS NOT NULL")
         print(f"  → {tbl}: total={total}, mapped={mapped}")
@@ -456,7 +488,6 @@ def parse_platforms_arg(pstr: str) -> List[str]:
     if not pstr or pstr.strip().lower() == "all":
         return list(TARGET_PLATFORM_IDS.keys())
     slugs = [s.strip().lower() for s in pstr.split(",") if s.strip()]
-    # garde seulement ceux qui existent dans le mapping (warn sinon)
     out = []
     for s in slugs:
         if s in TARGET_PLATFORM_IDS:
