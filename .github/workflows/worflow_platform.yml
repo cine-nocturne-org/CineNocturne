@@ -1,32 +1,139 @@
-name: Scrape Streaming Catalogs
+name: Scrape Streaming Catalogs by Genre (FR)
 
 on:
-  workflow_dispatch:   # lancement manuel
+  workflow_dispatch:
+    inputs:
+      country:
+        description: "TMDB country (watch_region)"
+        required: true
+        default: "FR"
+      language:
+        description: "TMDB language (metadata)"
+        required: true
+        default: "fr-FR"
+      platforms_csv:
+        description: "Plateformes séparées par virgules (ex: netflix,prime,hbo,apple,hulu)"
+        required: true
+        default: "netflix,prime,hbo,apple"
+      genres_csv:
+        description: "IDs TMDB de genres séparés par virgules (ex: 28,12,16,35,18,27)"
+        required: true
+        default: "28,12,16,35,80,99,18,10751,14,36,27,10402,9648,10749,878,10770,53,10752,37"
+      reset_tables:
+        description: "Réinitialiser les tables streaming avant (drop & recreate) ?"
+        required: true
+        default: "false"
+        type: choice
+        options: ["false","true"]
 
 jobs:
-  scrape:
+  setup-matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-
+    outputs:
+      platforms_json: ${{ steps.mkjson.outputs.platforms_json }}
+      genres_json: ${{ steps.mkjson.outputs.genres_json }}
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Ensure jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+      - id: mkjson
+        name: Build matrix JSON
+        run: |
+          # Nettoie les espaces et transforme CSV -> JSON array
+          PLAT='${{ inputs.platforms_csv }}'
+          GEN='${{ inputs.genres_csv }}'
+          PLAT_JSON=$(jq -cn --arg csv "$PLAT" '$csv|split(",")|map(gsub("^\\s+|\\s+$";""))|map(select(length>0))')
+          GEN_JSON=$(jq -cn --arg csv "$GEN" '$csv|split(",")|map(gsub("^\\s+|\\s+$";""))|map(select(length>0))')
+          echo "platforms_json=$PLAT_JSON" >> "$GITHUB_OUTPUT"
+          echo "genres_json=$GEN_JSON" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+  reset:
+    if: ${{ inputs.reset_tables == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Scrape platforms (France only)
+      - name: Reset streaming tables (clean schema)
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          TMDB_COUNTRY: FR
-          TMDB_LANGUAGE: fr-FR
+          TMDB_COUNTRY: ${{ inputs.country }}
+          TMDB_LANGUAGE: ${{ inputs.language }}
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
-          python E1_BDD/scrapping_platforms.py --reset --scrape
+          python E1_BDD/scrapping_platforms.py --reset
+
+  prepare:
+    needs: [setup-matrix, reset]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Prepare staging tables
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_COUNTRY: ${{ inputs.country }}
+          TMDB_LANGUAGE: ${{ inputs.language }}
+          MYSQL_URL: ${{ secrets.MYSQL_URL }}
+        run: |
+          python E1_BDD/scrapping_platforms.py --prepare --platform all
+
+  scrape:
+    needs: [setup-matrix, prepare]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(needs.setup-matrix.outputs.platforms_json) }}
+        genre: ${{ fromJson(needs.setup-matrix.outputs.genres_json) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Scrape shard (platform × genre)
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_COUNTRY: ${{ inputs.country }}
+          TMDB_LANGUAGE: ${{ inputs.language }}
+          MYSQL_URL: ${{ secrets.MYSQL_URL }}
+        run: |
+          echo "Shard: platform=${{ matrix.platform }} genre=${{ matrix.genre }}"
+          python E1_BDD/scrapping_platforms.py --scrape-shard --platform ${{ matrix.platform }} --genre ${{ matrix.genre }}
+
+  finalize:
+    needs: [scrape]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Finalize (clean, map, swap)
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_COUNTRY: ${{ inputs.country }}
+          TMDB_LANGUAGE: ${{ inputs.language }}
+          MYSQL_URL: ${{ secrets.MYSQL_URL }}
+        run: |
+          python E1_BDD/scrapping_platforms.py --finalize --platform all
