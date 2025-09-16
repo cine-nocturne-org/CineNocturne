@@ -56,6 +56,11 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 # HTTP helper with backoff
 # =========================
 def get_with_backoff(url: str, params: dict, max_tries=6, base_sleep=0.6) -> Optional[requests.Response]:
+    """
+    Essaie plusieurs fois puis renvoie None en cas d'échec.
+    ⚠️ Ne lève jamais d'exception HTTP ici : l'appelant gère.
+    """
+    last_status = None
     for attempt in range(1, max_tries + 1):
         try:
             r = requests.get(url, params=params, timeout=TIMEOUT)
@@ -65,9 +70,11 @@ def get_with_backoff(url: str, params: dict, max_tries=6, base_sleep=0.6) -> Opt
         if r and r.status_code == 200:
             return r
 
+        # Codes à réessayer: 429 + 5xx courants
         if r and r.status_code in (429, 500, 502, 503, 504):
+            last_status = r.status_code
             wait = base_sleep * (2 ** (attempt - 1)) + random.random() * 0.5
-            ra = r.headers.get("Retry-After") if r is not None else None
+            ra = r.headers.get("Retry-After")
             if ra:
                 try:
                     wait = max(wait, float(ra))
@@ -76,11 +83,14 @@ def get_with_backoff(url: str, params: dict, max_tries=6, base_sleep=0.6) -> Opt
             time.sleep(wait)
             continue
 
+        # Autres codes: pas de retry ici → on sort proprement
         if r is not None:
-            # laisser lever si autre code
-            r.raise_for_status()
+            last_status = r.status_code
         break
+
+    # Échec final: on ne lève pas, on renvoie None
     return None
+
 
 # =========================
 # DB helpers
@@ -249,25 +259,32 @@ def safe_year(date_str: Optional[str]) -> Optional[int]:
     return None
 
 def discover_provider_movies(provider_id: int, country: str, lang: str) -> List[dict]:
-    """Tous les films (flatrate) disponibles pour un provider donné (toutes pages)."""
+    """Retourne tous les films flatrate pour un provider. Saute les pages qui échouent."""
     out = []
     params = {
         "api_key": API_KEY,
         "with_watch_providers": provider_id,
         "watch_region": country,
-        "with_watch_monetization_types": "flatrate",  # abonnement ONLY
+        "with_watch_monetization_types": "flatrate",
         "language": lang,
         "sort_by": "popularity.desc",
         "page": 1
     }
+
+    # Page 1 pour connaître total_pages
     r = get_with_backoff(DISCOVER_MOVIE_URL, params)
     if not (r and r.status_code == 200):
+        print(f"⚠️ discover page 1 failed (provider={provider_id}).")
         return out
-    data = r.json() or {}
+
+    try:
+        data = r.json() or {}
+    except Exception:
+        data = {}
     total_pages = min(int(data.get("total_pages") or 1), MAX_PAGES)
 
-    def collect(js):
-        for mv in (js or []):
+    def collect(results):
+        for mv in results or []:
             tmdb_id = mv.get("id")
             if not tmdb_id:
                 continue
@@ -275,19 +292,35 @@ def discover_provider_movies(provider_id: int, country: str, lang: str) -> List[
                 "tmdb_id": int(tmdb_id),
                 "title": (mv.get("title") or mv.get("original_title") or "").strip(),
                 "release_year": safe_year(mv.get("release_date")),
-                "rating": float(mv.get("vote_average") or 0.0)
+                "rating": float(mv.get("vote_average") or 0.0),
             })
 
     collect(data.get("results"))
     time.sleep(REQUEST_SLEEP)
+
+    # Parcours des pages 2..N, on continue même si une page renvoie 500
+    consecutive_fail = 0
     for page in range(2, total_pages + 1):
         params["page"] = page
         r = get_with_backoff(DISCOVER_MOVIE_URL, params)
         if not (r and r.status_code == 200):
-            break
-        collect((r.json() or {}).get("results"))
+            consecutive_fail += 1
+            print(f"⚠️ provider={provider_id} page={page}: échec (on continue). cons_fail={consecutive_fail}")
+            # Si trop d'échecs d’affilée, on arrête pour éviter de tourner à vide
+            if consecutive_fail >= 5:
+                print("⚠️ trop d'échecs consécutifs, on stoppe le provider pour cette passe.")
+                break
+            continue
+        consecutive_fail = 0
+        try:
+            data = r.json() or {}
+        except Exception:
+            data = {}
+        collect(data.get("results"))
         time.sleep(REQUEST_SLEEP)
+
     return out
+
 
 # =========================
 # Upsert direct (sans staging)
