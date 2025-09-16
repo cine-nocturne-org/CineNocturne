@@ -1,9 +1,10 @@
-name: Scrape platforms (direct, no staging)
+name: Scrape platforms
 
 on:
-  schedule:
-    - cron: "0 0 5 * *"
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["Run scrapping every night"]
+    types: [completed]
+  workflow_dispatch: {} 
 
 jobs:
   scrape-platforms:
