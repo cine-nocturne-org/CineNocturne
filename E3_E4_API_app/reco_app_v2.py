@@ -100,6 +100,11 @@ PLAT_LABELS = {
     "hulu": "Hulu",
     "hbo": "HBO Max",
     "apple": "Apple TV+",
+    "canal": "Canal+",
+    "disney": "Disney+",
+    "paramount": "Paramount+",
+    "hbo": "HBO Max",
+    "crunchyroll": "crunchyroll"
 }
 
 # -----------------------------
@@ -460,10 +465,9 @@ def main_app():
     
                 with st.form("random_movies_form"):
                     selected_genre = st.selectbox("Choisissez un genre", genre_list)
-                    # mêmes clés que côté API : netflix / prime / hulu / hbo / apple
                     selected_platforms = st.multiselect(
                         "Choisissez les plateformes",
-                        ["netflix", "prime", "hulu", "hbo", "apple"]
+                        ["netflix", "prime", "hulu", "hbo", "apple", "canal", "disney", "paramount", "hbo", "crunchyroll"]
                     )
                     submitted = st.form_submit_button("Afficher des films aléatoires")
     
@@ -872,6 +876,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
