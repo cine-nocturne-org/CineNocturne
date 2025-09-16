@@ -274,7 +274,6 @@ def normalize_for_match(s: str) -> str:
     return s
 
 
-
 @contextmanager
 def mlflow_start_inference_run(input_title: str, top_k: int):
     """Démarre un run MLflow si possible. Sinon, no-op avec run_id='no-mlflow'."""
@@ -300,6 +299,15 @@ def mlflow_start_inference_run(input_title: str, top_k: int):
         except Exception:
             pass
 
+def build_platform_union_sql() -> str:
+    """
+    Construit une sous-requête UNION ALL : (platform_name, movie_id, imdb_id)
+    à partir de PLATFORM_TABLES.
+    """
+    parts = []
+    for label, tbl in PLATFORM_TABLES.values():
+        parts.append(f"SELECT '{label}' AS platform_name, movie_id, imdb_id FROM `{tbl}`")
+    return "\nUNION ALL\n".join(parts)
 
 
 # ======================
@@ -717,7 +725,11 @@ async def get_unique_genres():
 @app.get("/movie-details/{title}", dependencies=[Depends(verify_credentials)])
 async def get_movie_details(title: str):
     try:
-        query = """
+        platforms_union = build_platform_union_sql()
+        query = f"""
+        WITH p AS (
+            {platforms_union}
+        )
         SELECT 
             m.movie_id,
             m.title AS movie_title,
@@ -726,20 +738,11 @@ async def get_movie_details(title: str):
             m.rating AS movie_rating,
             m.synopsis,
             m.poster_url,
-            p.platform_name
+            pu.platform_name
         FROM movies m
-        LEFT JOIN (
-            SELECT 'Netflix' AS platform_name, title FROM netflix
-            UNION
-            SELECT 'Prime' AS platform_name, title FROM prime
-            UNION
-            SELECT 'Hulu' AS platform_name, title FROM hulu
-            UNION
-            SELECT 'HBO Max' AS platform_name, title FROM hbo
-            UNION
-            SELECT 'Apple' AS platform_name, title FROM apple
-        ) p
-        ON m.title = p.title
+        LEFT JOIN p pu
+          ON (pu.movie_id = m.movie_id)
+          OR (pu.imdb_id IS NOT NULL AND pu.imdb_id <> '' AND pu.imdb_id = m.imdb_id)
         WHERE LOWER(m.title) = LOWER(:title)
         """
         with engine.connect() as conn:
@@ -749,7 +752,7 @@ async def get_movie_details(title: str):
             raise HTTPException(status_code=404, detail="Film non trouvé.")
 
         first = result[0]
-        platforms = list({row[7] for row in result if row[7]})
+        platforms = sorted({row[7] for row in result if row[7]})
         return {
             "movie_id": first[0],
             "title": first[1],
@@ -768,33 +771,45 @@ async def get_movie_details(title: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
-
-# -- Films aléatoires par genre et plateformes
+# -- Films aléatoires par genre et plateformes + mapping tables
 PLATFORM_TABLES = {
-    "netflix": "netflix",
-    "prime": "prime",
-    "hulu": "hulu",
-    "hbo": "hbo",
-    "apple": "apple"
+    "netflix":      ("Netflix", "netflix"),
+    "prime":        ("Prime Video", "prime"),
+    "apple":        ("Apple TV+", "apple"),
+    "canal":        ("Canal+", "canal"),
+    "disney":       ("Disney+", "disney"),
+    "paramount":    ("Paramount+", "paramount"),
+    "hbo":          ("HBO Max", "hbo"),
+    "crunchyroll":  ("Crunchyroll", "crunchyroll"),
 }
+
 
 @app.get("/random_movies/", dependencies=[Depends(verify_credentials)])
 async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit: int = 10):
     try:
-        selected_platforms = [p.lower() for p in platforms if p.lower() in PLATFORM_TABLES]
-        if not selected_platforms:
+        # valider les plateformes demandées
+        selected = []
+        for p in platforms:
+            key = p.lower().strip()
+            if key in PLATFORM_TABLES:
+                selected.append(key)
+        if not selected:
             raise HTTPException(status_code=400, detail="Aucune plateforme valide sélectionnée.")
 
         out = []
         with engine.connect() as conn:
-            for platform in selected_platforms:
+            for key in selected:
+                label, tbl = PLATFORM_TABLES[key]
                 query = f"""
-                SELECT m.title, m.synopsis, m.poster_url, m.genres, '{platform}' AS platform, m.release_year
+                SELECT 
+                    m.title, m.synopsis, m.poster_url, m.genres, :label AS platform, m.release_year
                 FROM movies m
-                JOIN {platform} p ON m.title = p.title
-                WHERE FIND_IN_SET(:genre, REPLACE(m.genres, '|', ','))  -- gère '|' et ','
+                JOIN `{tbl}` p
+                  ON (p.movie_id = m.movie_id)
+                  OR (p.imdb_id IS NOT NULL AND p.imdb_id <> '' AND p.imdb_id = m.imdb_id)
+                WHERE FIND_IN_SET(:genre, REPLACE(m.genres, '|', ','))
                 """
-                result = conn.execute(text(query), {"genre": genre}).fetchall()
+                result = conn.execute(text(query), {"genre": genre, "label": label}).fetchall()
                 for row in result:
                     out.append({
                         "title": row[0],
@@ -808,7 +823,7 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
         if not out:
             raise HTTPException(status_code=404, detail="Aucun film trouvé pour ce genre et ces plateformes.")
 
-        # Echantillonner en évitant les entrées incomplètes
+        # filtrer les films exploitables et échantillonner
         filtered = [m for m in out if m.get("poster_url") and m.get("synopsis")]
         if not filtered:
             raise HTTPException(status_code=404, detail="Aucun film exploitable (poster/synopsis manquants).")
@@ -823,11 +838,16 @@ async def get_random_movies(genre: str, platforms: List[str] = Query(...), limit
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
 
 
+
 # -- Export CSV complet movie + plateformes (left join)
 @app.get("/download-movie-details/", dependencies=[Depends(verify_credentials)])
 async def download_movie_details():
     try:
-        query = """
+        platforms_union = build_platform_union_sql()
+        query = f"""
+        WITH p AS (
+            {platforms_union}
+        )
         SELECT 
             m.movie_id,
             m.title AS movie_title,
@@ -836,21 +856,12 @@ async def download_movie_details():
             m.rating AS movie_rating,
             m.synopsis,
             m.poster_url,
-            COALESCE(p.platform_name, 'Not available') AS platform_name
+            COALESCE(pp.platform_name, 'Not available') AS platform_name
         FROM movies m
-        LEFT JOIN (
-            SELECT 'Netflix' AS platform_name, title FROM netflix
-            UNION
-            SELECT 'Prime' AS platform_name, title FROM prime
-            UNION
-            SELECT 'Hulu' AS platform_name, title FROM hulu
-            UNION
-            SELECT 'HBO Max' AS platform_name, title FROM hbo
-            UNION
-            SELECT 'Apple' AS platform_name, title FROM apple
-        ) p
-        ON m.title = p.title
-        ORDER BY m.title;
+        LEFT JOIN p pp
+          ON (pp.movie_id = m.movie_id)
+          OR (pp.imdb_id IS NOT NULL AND pp.imdb_id <> '' AND pp.imdb_id = m.imdb_id)
+        ORDER BY m.title
         """
         with engine.connect() as conn:
             result = conn.execute(text(query))
@@ -874,6 +885,7 @@ async def download_movie_details():
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
 
 
 # -- Stats utilisateur : historique likes/dislikes, genres préférés, accuracy, etc.
@@ -1014,21 +1026,5 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
