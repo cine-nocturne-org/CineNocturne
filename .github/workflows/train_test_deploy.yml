@@ -61,19 +61,51 @@ jobs:
         run: |
           papermill E3_E4_API_app/model_reco.ipynb E3_E4_API_app/model_reco.out.ipynb
 
-      # 7) Add new models to Git LFS and commit
-      - name: Add new models to Git LFS
+      # 7) Commit LFS models (robuste + ident + debug)
+      - name: Commit LFS models
         run: |
-          git lfs track "E3_E4_API_app/model/*.joblib"
-          git add .gitattributes E3_E4_API_app/model/*.joblib
-          git commit -m "Update joblib models [ci skip]" || echo "No changes to commit"
-          git push origin main || echo "Push failed (possibly no new changes)"
+          set -e
+      
+          echo "==[CHECK OUTPUT]=="
+          ls -lah E3_E4_API_app/model || (echo "Dossier model manquant" && exit 1)
+          test "$(ls -1 E3_E4_API_app/model/*.joblib 2>/dev/null | wc -l)" -ge 1 || (echo "Aucun .joblib généré" && exit 1)
+      
+          echo "==[GIT IDENTITY]=="
+          git config --local user.name  "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      
+          echo "==[LFS INSTALL + TRACK]=="
+          git lfs version
+          git lfs install --local
+          # Assure le tracking des .joblib (idempotent)
+          if ! grep -q "\*.joblib filter=lfs" .gitattributes 2>/dev/null; then
+            echo "*.joblib filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+            git add .gitattributes
+          fi
+      
+          echo "==[ADD MODELS]=="
+          # Force add au cas où un .gitignore exclut le dossier
+          git add -f E3_E4_API_app/model/*.joblib
+      
+          echo "==[STATUS]=="
+          git status --porcelain
+      
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Update models $(date -u +%F_%H-%M-%S) [skip ci]"
+            echo "==[PUSH]=="
+            GIT_TRACE=1 GIT_CURL_VERBOSE=1 git push origin main
+          else
+            echo "No changes to commit."
+          fi
+      
+          echo "==[LFS FILES]=="
+          git lfs ls-files || true
+      
+      # 8) (optionnel) Lister les fichiers modèles après le commit
+      - name: List model files (post-commit)
+        run: |
+          ls -lh E3_E4_API_app/model || true
 
-      # 8) Debug : vérifier fichiers modèles
-      - name: List model files
-        run: |
-          echo "Fichiers modèles générés :"
-          ls -lh E3_E4_API_app/model || exit 1
 
       # 9) Run tests
       - name: Run tests
