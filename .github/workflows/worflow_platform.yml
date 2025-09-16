@@ -29,4 +29,4 @@ jobs:
           TMDB_LANGUAGE: fr-FR
           MYSQL_URL: ${{ secrets.MYSQL_URL }}
         run: |
-          python E1_BDD/manage_streaming_catalogs.py --reset --scrape
+          python E1_BDD/scrapping_platforms.py --reset --scrape
