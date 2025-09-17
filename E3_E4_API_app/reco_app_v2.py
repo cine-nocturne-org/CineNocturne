@@ -168,6 +168,13 @@ def reset_only_reco():
     """Réinitialise uniquement la pagination/des recos (garde la recherche)."""
     reset_reco(full=False)
 
+def fetch_movie_details(title: str) -> dict:
+    try:
+        r = api_get(f"movie-details/{title}")
+        return r.json() if r.status_code == 200 else {}
+    except requests.exceptions.RequestException:
+        return {}
+
 
 # -----------------------------
 # Application principale
@@ -198,24 +205,31 @@ def main_app():
     # ------------------------------
     with tab1:
         st.subheader("🎞️​ Dernier film vu :")
-
-        # === Taille de page ===
-        # st.select_slider(
-        #     "Films par page",
-        #     options=[3, 5, 8, 10],
-        #     value=st.session_state.get("page_size", 5),
-        #     key="page_size",
-        #     help="Nombre de recommandations affichées à la fois."
-        # )
-
+    
+        # === état par défaut requis par cet onglet ===
+        st.session_state.setdefault("has_rated_current", False)
+        st.session_state.setdefault("chosen_film_details", {})
+    
+        # --- petit helper pour récupérer les détails d'un film ---
+        def fetch_movie_details(title: str) -> dict:
+            try:
+                r = api_get(f"movie-details/{title}")
+                return r.json() if r.status_code == 200 else {}
+            except requests.exceptions.RequestException:
+                return {}
+    
         # === Recherche ===
         film_input = st.text_input("Entrez le titre du film :", key="film_input")
         c_search, c_reset_search = st.columns([1, 1])
+    
         with c_search:
             if st.button("Chercher", key="btn_search"):
                 reset_reco(full=True)
                 st.session_state["fuzzy_matches_1"] = None
                 st.session_state["chosen_film"] = None
+                st.session_state["chosen_film_details"] = {}
+                st.session_state["has_rated_current"] = False
+    
                 if film_input:
                     try:
                         with st.spinner("🔎 Recherche des correspondances…"):
@@ -229,10 +243,11 @@ def main_app():
                             st.error("❌ Erreur lors de la recherche.")
                     except requests.exceptions.RequestException:
                         st.error("❌ Erreur de connexion avec le serveur")
+    
         with c_reset_search:
             st.button("🧹 Réinitialiser la recherche", key="btn_reset_search", on_click=reset_search_all)
-
-        # === Sélection du film ===
+    
+        # === Sélection du film (grille d’options) ===
         if st.session_state.get("fuzzy_matches_1"):
             matches_info = []
             for match in st.session_state["fuzzy_matches_1"]:
@@ -246,64 +261,87 @@ def main_app():
                         movie_id = details.get("movie_id", movie_id)
                 except requests.exceptions.RequestException:
                     pass
-
+    
                 matches_info.append({
                     "title": match["title"],
                     "poster": poster_url,
                     "movie_id": movie_id
                 })
-
+    
             st.markdown("### Sélectionnez le film correct :")
             cols_per_row = 5
             rows = math.ceil(len(matches_info) / cols_per_row)
-            
-            # CSS une seule fois (petite carte propre)
+    
             st.markdown("""
             <style>
             .card { border:1px solid #eee; border-radius:12px; padding:8px; height:100%; }
             </style>
             """, unsafe_allow_html=True)
-            
+    
             for row in range(rows):
                 row_matches = matches_info[row*cols_per_row : (row+1)*cols_per_row]
                 if not row_matches:
                     continue
-            
+    
                 cols = st.columns(cols_per_row, gap="small")
-            
-                # Centre la rangée si < 5 items
                 offset = (cols_per_row - len(row_matches)) // 2
-
+    
                 for i, match in enumerate(row_matches):
                     with cols[offset + i]:
-                        # ✅ La boîte avec bordure
                         with st.container(border=True):
                             if match.get("poster"):
                                 st.image(match["poster"], width='stretch')
-                
                             st.caption(match.get("title", "Titre inconnu"))
-                
+    
                             key = f"select_{match.get('movie_id','na')}_{row}_{i}"
                             is_selected = (st.session_state.get("chosen_film") == match.get("title"))
                             label = "✅ Sélectionné" if is_selected else "Sélectionner"
-                
+    
                             if st.button(label, key=key, width='stretch', disabled=is_selected):
+                                # → sélection = on mémorise + on masque la grille
                                 reset_only_reco()
                                 st.session_state["chosen_film"] = match.get("title")
-
-
-
-        # === Notation du film sélectionné ===
+                                st.session_state["chosen_film_details"] = fetch_movie_details(match.get("title"))
+                                st.session_state["has_rated_current"] = False
+                                st.session_state["fuzzy_matches_1"] = None
+    
+        # === Fiche du film sélectionné ===
         chosen_film = st.session_state.get("chosen_film")
+        chosen_details = st.session_state.get("chosen_film_details", {}) if chosen_film else {}
+    
         if chosen_film:
+            st.markdown("---")
+            with st.container(border=True):
+                colA, colB = st.columns([1, 2])
+                with colA:
+                    if chosen_details.get("poster_url"):
+                        st.image(chosen_details["poster_url"], width='stretch')
+                with colB:
+                    title = chosen_details.get("title", chosen_film)
+                    year = chosen_details.get("releaseYear", "N/A")
+                    genres = chosen_details.get("genres", [])
+                    synopsis = chosen_details.get("synopsis", "Pas de synopsis disponible.")
+                    plats = chosen_details.get("platforms", [])
+    
+                    # genres → jolie string
+                    if isinstance(genres, list):
+                        genres_str = ", ".join(genres)
+                    else:
+                        genres_str = str(genres) if genres else "N/A"
+    
+                    st.markdown(f"### 🎬 {title} ({year})")
+                    if plats:
+                        st.caption("Disponible sur : " + " · ".join(plats))
+                    st.write(f"**Genres :** {genres_str}")
+                    st.write(synopsis)
+    
+            # === Notation du film (obligatoire avant recos) ===
             st.success(f"🎬 Film sélectionné : {chosen_film}")
-        
             raw_note = st.text_input(
-                "Notez votre film (0.0 – 10.0) pour obtenir une recommandation",
+                "Notez votre film (0.0 – 10.0) pour obtenir des recommandations",
                 placeholder="ex : 7.5",
                 key="note_text"
             )
-        
             if st.button("Valider la note", key="btn_save_rating"):
                 if not raw_note.strip():
                     st.error("Entre une note avant de valider.")
@@ -319,38 +357,39 @@ def main_app():
                             update_resp = api_post("update_rating", payload)
                             if update_resp.status_code == 200:
                                 st.success(f"✅ La note {round(val,1)} a été enregistrée pour '{chosen_film}' !")
+                                st.session_state["has_rated_current"] = True
                             else:
                                 st.error(update_resp.json().get("detail", "Erreur inconnue"))
                         else:
                             st.warning("La note doit être comprise **entre 0 et 10**.")
                     except ValueError:
                         st.warning("Format invalide. Exemple valide : 7.5")
-
-
-        # === Recommandations personnalisées (avec run_id + feedback) ===
-        if chosen_film:
+    
+            # === Recommandations personnalisées (désactivées tant que pas noté) ===
             st.subheader("🔍 Obtenir des recommandations personnalisées")
-            if st.button("Me recommander des films", key="btn_reco"):
+            btn_disabled = not st.session_state.get("has_rated_current", False)
+            if btn_disabled:
+                st.info("📝 Note ce film pour débloquer les recommandations.")
+            if st.button("Me recommander des films", key="btn_reco", disabled=btn_disabled):
                 try:
                     with start_ui_run(input_title=chosen_film, user=st.session_state.username):
                         mlflow.set_tags({"source": "streamlit", "stage": "inference_ui"})
                         mlflow.log_param("user", st.session_state.username)
                         mlflow.log_param("film_input", chosen_film)
-
+    
                         with st.spinner("🧠 Calcul des recommandations…"):
-                            # Appel API : on demande large puis on pagine côté UI
                             response = api_get(
                                 f"recommend_xgb_personalized/{chosen_film}",
                                 params={"top_k": 50}
                             )
-
+    
                         if response.status_code != 200:
                             st.error(response.json().get("detail", "Erreur inconnue"))
                         else:
                             payload = response.json()
                             st.session_state["last_run_id"] = payload.get("run_id")
                             recos = payload.get("recommendations", [])
-
+    
                             # dédoublonnage
                             seen, pool = set(), []
                             for r in recos:
@@ -358,26 +397,26 @@ def main_app():
                                 if t and t not in seen:
                                     seen.add(t)
                                     pool.append(r)
-
+    
                             st.session_state["reco_pool"] = pool
                             st.session_state["reco_shown_titles"] = []
                             st.session_state["reco_page"] = 0
-
+    
                             if page_from_pool():
                                 st.success("🎯 Recommandations trouvées !")
                             else:
                                 st.info("Aucune recommandation trouvée pour ce film")
-
+    
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
                 except Exception as e:
                     st.error(f"❌ Erreur MLflow : {e}")
                     st.text(traceback.format_exc())
-
-            # --- Affichage + Feedback (page courante) ---
+    
+            # --- Affichage + Feedback (page courante) — SANS IMAGES ---
             recos = st.session_state.get("current_recos", [])
             run_id = st.session_state.get("last_run_id") or "no_run"
-
+    
             def send_feedback(reco_title: str, pred_label: int, pred_score: float, liked: int):
                 if st.session_state.get("last_run_id") is None:
                     st.error("Run MLflow introuvable. Relance une recommandation.")
@@ -400,26 +439,22 @@ def main_app():
                         st.error(resp.json().get("detail", "Erreur lors du feedback"))
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
-
+    
             if recos:
                 for i, reco in enumerate(recos, start=1):
-                    cols = st.columns([1, 3])
-                    with cols[0]:
-                        if reco.get("poster_url"):
-                            st.image(reco["poster_url"], width='stretch')
-                    with cols[1]:
+                    with st.container(border=True):
                         reco_title = reco.get("title", "Titre inconnu")
                         raw_genres = reco.get("genres", [])
                         genres = parse_genres(raw_genres)
                         reco_synopsis = reco.get("synopsis", "Pas de synopsis disponible.")
                         score = float(reco.get("pred_score", 0.0))
                         pred_label = int(score >= 0.5)
-
+    
                         st.markdown(f"### 🎬 {reco_title}")
-                        st.markdown(f"**Ce film est susceptible de vous plaire à {int(score*100)}%**")
+                        st.write(f"**Probabilité d'aimer :** {int(score*100)}%")
                         st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                         st.write(reco_synopsis)
-
+    
                         b1, b2 = st.columns(2)
                         with b1:
                             if st.button(
@@ -435,11 +470,11 @@ def main_app():
                                 disabled=(st.session_state.get('last_run_id') is None)
                             ):
                                 send_feedback(reco_title, pred_label, score, liked=0)
-
-                # --- Pagination / Reset (après la liste) ---
+    
+                # --- Pagination / Reset ---
                 left = max(0, len(st.session_state.get("reco_pool", [])) - len(st.session_state.get("reco_shown_titles", [])))
                 c_more, c_reset = st.columns([1, 1])
-
+    
                 with c_more:
                     if st.button(
                         f"🔁 Proposer d'autres recommandations ({left} restants)",
@@ -448,9 +483,10 @@ def main_app():
                     ):
                         if not page_from_pool():
                             st.info("Plus de recommandations disponibles.")
-
+    
                 with c_reset:
                     st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
+
 
 
     # ------------------------------
@@ -876,6 +912,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
