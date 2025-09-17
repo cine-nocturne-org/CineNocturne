@@ -210,13 +210,44 @@ def main_app():
         st.session_state.setdefault("has_rated_current", False)
         st.session_state.setdefault("chosen_film_details", {})
     
-        # --- petit helper pour récupérer les détails d'un film ---
+        # --- helpers ---
         def fetch_movie_details(title: str) -> dict:
             try:
                 r = api_get(f"movie-details/{title}")
                 return r.json() if r.status_code == 200 else {}
             except requests.exceptions.RequestException:
                 return {}
+    
+        @st.cache_data(ttl=3600)
+        def _fetch_details_map(titles):
+            """Récupère poster/platforms/genres/year pour une liste de titres (cache 1h)."""
+            out = {}
+            for t in titles:
+                try:
+                    r = api_get(f"movie-details/{t}")
+                    if r.status_code == 200:
+                        j = r.json() or {}
+                        out[t] = {
+                            "poster_url": j.get("poster_url"),
+                            "platforms": j.get("platforms", []),
+                            "genres": j.get("genres"),
+                            "releaseYear": j.get("releaseYear"),
+                            "synopsis": j.get("synopsis"),
+                            "rating": j.get("rating"),
+                        }
+                    else:
+                        out[t] = {}
+                except Exception:
+                    out[t] = {}
+            return out
+    
+        def _pretty_plats(plats):
+            if not plats:
+                return []
+            try:
+                return [PLAT_LABELS.get((p or "").lower(), p) for p in plats]
+            except Exception:
+                return plats
     
         # === Recherche ===
         film_input = st.text_input("Entrez le titre du film :", key="film_input")
@@ -247,8 +278,8 @@ def main_app():
         with c_reset_search:
             st.button("🧹 Réinitialiser la recherche", key="btn_reset_search", on_click=reset_search_all)
     
-        # === Sélection du film (grille d’options) ===
-        if st.session_state.get("fuzzy_matches_1"):
+        # === Sélection du film (grille d’options) — masque si un film est déjà choisi ===
+        if st.session_state.get("fuzzy_matches_1") and not st.session_state.get("chosen_film"):
             matches_info = []
             for match in st.session_state["fuzzy_matches_1"]:
                 poster_url = None
@@ -290,14 +321,14 @@ def main_app():
                     with cols[offset + i]:
                         with st.container(border=True):
                             if match.get("poster"):
-                                st.image(match["poster"], width='stretch')
+                                st.image(match["poster"], width="stretch")
                             st.caption(match.get("title", "Titre inconnu"))
     
                             key = f"select_{match.get('movie_id','na')}_{row}_{i}"
                             is_selected = (st.session_state.get("chosen_film") == match.get("title"))
                             label = "✅ Sélectionné" if is_selected else "Sélectionner"
     
-                            if st.button(label, key=key, width='stretch', disabled=is_selected):
+                            if st.button(label, key=key, width="stretch", disabled=is_selected):
                                 # → sélection = on mémorise + on masque la grille
                                 reset_only_reco()
                                 st.session_state["chosen_film"] = match.get("title")
@@ -315,13 +346,13 @@ def main_app():
                 colA, colB = st.columns([1, 2])
                 with colA:
                     if chosen_details.get("poster_url"):
-                        st.image(chosen_details["poster_url"], width='stretch')
+                        st.image(chosen_details["poster_url"], width="stretch")
                 with colB:
                     title = chosen_details.get("title", chosen_film)
                     year = chosen_details.get("releaseYear", "N/A")
                     genres = chosen_details.get("genres", [])
                     synopsis = chosen_details.get("synopsis", "Pas de synopsis disponible.")
-                    plats = chosen_details.get("platforms", [])
+                    plats = _pretty_plats(chosen_details.get("platforms", []))
     
                     # genres → jolie string
                     if isinstance(genres, list):
@@ -413,7 +444,7 @@ def main_app():
                     st.error(f"❌ Erreur MLflow : {e}")
                     st.text(traceback.format_exc())
     
-            # --- Affichage + Feedback (page courante) — SANS IMAGES ---
+            # --- Affichage + Feedback (page courante) — AVEC IMAGES + PLATEFORMES ---
             recos = st.session_state.get("current_recos", [])
             run_id = st.session_state.get("last_run_id") or "no_run"
     
@@ -441,17 +472,36 @@ def main_app():
                     st.error("❌ Erreur de connexion avec le serveur")
     
             if recos:
+                # Fallback details (poster/platforms) si manquants dans la payload
+                titles_to_fetch = [
+                    r.get("title") for r in recos
+                    if r.get("title") and (not r.get("poster_url") or r.get("platforms") in (None, [], ""))
+                ]
+                details_map = _fetch_details_map(sorted(set(titles_to_fetch))) if titles_to_fetch else {}
+    
                 for i, reco in enumerate(recos, start=1):
-                    with st.container(border=True):
+                    cols = st.columns([1, 3])
+                    with cols[0]:
+                        poster_url = reco.get("poster_url") or details_map.get(reco.get("title"), {}).get("poster_url")
+                        if poster_url:
+                            st.image(poster_url, width="stretch")
+                    with cols[1]:
                         reco_title = reco.get("title", "Titre inconnu")
                         raw_genres = reco.get("genres", [])
                         genres = parse_genres(raw_genres)
-                        reco_synopsis = reco.get("synopsis", "Pas de synopsis disponible.")
+                        reco_synopsis = reco.get("synopsis") or details_map.get(reco_title, {}).get("synopsis") or "Pas de synopsis disponible."
                         score = float(reco.get("pred_score", 0.0))
                         pred_label = int(score >= 0.5)
     
+                        plats = reco.get("platforms")
+                        if not plats:
+                            plats = details_map.get(reco_title, {}).get("platforms", [])
+                        plats = _pretty_plats(plats)
+    
                         st.markdown(f"### 🎬 {reco_title}")
                         st.write(f"**Probabilité d'aimer :** {int(score*100)}%")
+                        if plats:
+                            st.caption("Disponible sur : " + " · ".join(plats))
                         st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                         st.write(reco_synopsis)
     
@@ -486,6 +536,7 @@ def main_app():
     
                 with c_reset:
                     st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
+
 
 
 
@@ -912,6 +963,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
