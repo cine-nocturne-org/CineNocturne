@@ -714,9 +714,7 @@ def main_app():
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
 
-    # ------------------------------
-    # Onglet 4 : Dashboard perso
-    # ------------------------------
+
     # ------------------------------
     # Utils dashboard (robustes)
     # ------------------------------
@@ -750,18 +748,78 @@ def main_app():
             return None, "Erreur de connexion avec le serveur."
         except Exception as e:
             return None, f"Erreur inattendue: {e}"
-
+    
     # ------------------------------
     # Onglet 4 : Dashboard perso
     # ------------------------------
     with tab4:
         st.subheader("📈 Mon Profil")
     
+        import matplotlib.pyplot as plt
+    
         user = st.session_state.get("username")
         if not user:
             st.info("Connecte-toi pour voir ton tableau de bord.")
             st.stop()
     
+        # ---------- Helpers locaux ----------
+        def _parse_g(s):
+            if s is None or (isinstance(s, float) and pd.isna(s)):
+                return []
+            return [g.strip() for g in str(s).replace("|", ",").split(",") if g.strip()]
+    
+        def _normalize_genre_fr(g: str) -> str:
+            """Normalise quelques variantes FR pour regrouper proprement."""
+            g0 = (g or "").strip().lower()
+            mapping = {
+                "science fiction": "science-fiction",
+                "mystere": "mystère",
+                "comedie": "comédie",
+            }
+            return mapping.get(g0, g0)
+    
+        def hero_title_for_genre(genre: str) -> str:
+            g = (genre or "").strip().lower()
+            fr_map = {
+                "horreur": "🕯️ Ambiance frisson",
+                "comédie": "😂 Bonne humeur garantie",
+                "action": "💥 Décharge d’adrénaline",
+                "thriller": "🕵️ Suspense maximal",
+                "drame": "🎭 Émotions fortes",
+                "romance": "💞 Âme romantique",
+                "animation": "🎨 Âme animée",
+                "science-fiction": "🚀 Rêves de SF",
+                "fantasy": "🧙 Cap sur l’imaginaire",
+                "documentaire": "🎓 Esprit curieux",
+                "crime": "🕶️ Amateur de polars",
+                "famille": "👨‍👩‍👧 Esprit famille",
+                "western": "🤠 Esprit Far West",
+                "mystère": "🧩 Chasseur d’énigmes",
+                "guerre": "⚔️ Chroniques de guerre",
+                "musique": "🎵 Cinéphile mélomane",
+                "histoire": "🏺 Passion histoire",
+                "aventure": "🗺️ Goût de l’aventure",
+                "biopic": "👤 Vies d’exception",
+                "sport": "🏅 Esprit sportif",
+                "noir": "🌑 Noir c’est noir",
+            }
+            if not g:
+                return "⭐ Découvrons tes goûts"
+            return fr_map.get(g, f"⭐ Ton ambiance : {genre}")
+    
+        @st.cache_data(ttl=3600)
+        def _fetch_release_year_map(titles):
+            """Fallback si release_year manquant : va chercher via /movie-details/{title}."""
+            out = {}
+            for t in titles:
+                try:
+                    r = api_get(f"movie-details/{t}")
+                    out[t] = r.json().get("releaseYear") if r.status_code == 200 else None
+                except Exception:
+                    out[t] = None
+            return out
+    
+        # ---------- Données API ----------
         with st.spinner("Chargement de tes statistiques…"):
             stats, err = fetch_user_stats(user)
     
@@ -778,19 +836,67 @@ def main_app():
         accuracy    = float(stats.get("accuracy") or 0.0)
         confusion   = stats.get("confusion") or {"tp":0,"tn":0,"fp":0,"fn":0}
         top_genres  = stats.get("top_genres") or []
-        by_year     = stats.get("by_year") or []
+        by_year     = stats.get("by_year") or []   # on ne l'utilise plus pour la courbe (on recalcule depuis les notations)
         recent_list = stats.get("recent") or []
     
-        # --- KPIs
-        pref_genre = (top_genres[0]["genre"] if top_genres else "N/A")
-        
+        # --- Récupère toutes les notations utilisateur (servira pour pie + courbe) ---
+        ratings, rerr = fetch_user_ratings(user, limit=5000)
+        if rerr:
+            st.warning(rerr)
+            ratings = []
+    
+        df_r = pd.DataFrame(ratings or [])
+        df_last = pd.DataFrame()
+        if not df_r.empty:
+            # garder la DERNIÈRE note par film
+            if "ts" in df_r.columns:
+                df_r["ts"] = pd.to_datetime(df_r["ts"], errors="coerce")
+                df_r = df_r.sort_values("ts")
+            df_last = df_r.groupby("title", as_index=False).tail(1).copy()
+    
+            # types propres
+            df_last["rating"] = pd.to_numeric(df_last.get("rating"), errors="coerce")
+    
+            # release_year : colonnes + fallback API si manquant
+            if "release_year" in df_last.columns:
+                df_last["release_year"] = pd.to_numeric(df_last["release_year"], errors="coerce")
+            else:
+                df_last["release_year"] = pd.NA
+    
+            missing_year_titles = df_last.loc[df_last["release_year"].isna(), "title"].dropna().unique().tolist()
+            if missing_year_titles:
+                ry_map = _fetch_release_year_map(sorted(set(missing_year_titles)))
+                df_last.loc[df_last["release_year"].isna(), "release_year"] = df_last.loc[
+                    df_last["release_year"].isna(), "title"
+                ].map(ry_map)
+                df_last["release_year"] = pd.to_numeric(df_last["release_year"], errors="coerce")
+    
+        # --- Genre favori calculé (notes > 5) pour le TITRE dynamique ---
+        pref_genre_calc = "N/A"
+        if not df_last.empty:
+            liked_df = df_last[df_last["rating"] > 5.0].copy()
+            liked_df["genres_list"] = liked_df["genres"].apply(_parse_g)
+            expl = liked_df.explode("genres_list").dropna(subset=["genres_list"])
+            if not expl.empty:
+                expl["genres_norm"] = expl["genres_list"].map(_normalize_genre_fr)
+                counts_title = expl.groupby("genres_norm")["title"].nunique().sort_values(ascending=False)
+                if not counts_title.empty:
+                    pref_genre_calc = str(counts_title.index[0])
+    
+        # fallback si rien trouvé : top_genres de l'API
+        if pref_genre_calc == "N/A" and top_genres:
+            pref_genre_calc = top_genres[0].get("genre", "N/A")
+    
+        # --- Titre dynamique FR au-dessus des KPI ---
+        st.markdown(f"## {hero_title_for_genre(pref_genre_calc)}")
+    
+        # --- KPIs (label FR propre) ---
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("👍 Likes", f"{likes}")
         c2.metric("👎 Dislikes", f"{dislikes}")
         c3.metric("Taux de like", f"{like_rate*100:.0f}%")
         c4.metric("Accuracy modèle", f"{accuracy*100:.0f}%")
-        c5.metric("Genre préféré (likes)", pref_genre)
-
+        c5.metric("Genre préféré", pref_genre_calc)
     
         # --- Confusion matrix (tolérante)
         st.caption("Confusion (sur les recos où tu as donné un avis)")
@@ -803,139 +909,129 @@ def main_app():
         except Exception:
             st.info("Confusion non disponible.")
     
-        # --- Genres préférés basés sur mes notes > THRESH
+        # --- Genres préférés (pie chart) basés sur mes notes > THRESH ---
         st.markdown("### 🎭 Genres préférés (selon mes notes > 5)")
         THRESH = 5.0
-        ratings, rerr = fetch_user_ratings(user, limit=5000)
-        if rerr:
-            st.warning(rerr)
+        if df_last.empty:
+            st.info("Tu n'as pas encore noté de films.")
         else:
-            if not ratings:
-                st.info("Tu n'as pas encore noté de films.")
+            liked = df_last[df_last["rating"] > THRESH].copy()
+            liked["genres_list"] = liked["genres"].apply(_parse_g)
+            expl = liked.explode("genres_list").dropna(subset=["genres_list"])
+            if expl.empty:
+                st.info("Aucun genre favori détecté (notes > 5).")
             else:
-                df_r = pd.DataFrame(ratings)
+                expl["genres_norm"] = expl["genres_list"].map(_normalize_genre_fr)
+                counts = expl.groupby("genres_norm")["title"].nunique().sort_values(ascending=False)
     
-                # garder la DERNIÈRE note par film
-                if "ts" in df_r.columns:
-                    df_r["ts"] = pd.to_datetime(df_r["ts"], errors="coerce")
-                    df_r = df_r.sort_values("ts")
-                # Si pas de ts, on garde tel quel et tail(1) par film ne plante pas
-                df_last = df_r.groupby("title", as_index=False).tail(1).copy()
-    
-                # filtre > THRESH
-                df_last["rating"] = pd.to_numeric(df_last.get("rating"), errors="coerce")
-                df_last = df_last[df_last["rating"] > THRESH]
-    
-                # parse genres
-                def _parse_g(s):
-                    if s is None or (isinstance(s, float) and pd.isna(s)):
-                        return []
-                    return [g.strip() for g in str(s).replace("|", ",").split(",") if g.strip()]
-    
-                if not df_last.empty:
-                    df_last["genres_list"] = df_last["genres"].apply(_parse_g)
-                    expl = df_last.explode("genres_list").dropna(subset=["genres_list"])
-                    if expl.empty:
-                        st.info("Aucun genre favori détecté (notes > 5).")
-                    else:
-                        counts = expl.groupby("genres_list")["title"].nunique().sort_values(ascending=False)
-                        if counts.empty:
-                            st.info("Aucun genre favori détecté (notes > 5).")
-                        else:
-                            st.bar_chart(counts)
-                            top5 = counts.head(5)
-                            st.caption("Top genres : " + ", ".join(f"{g} ({n})" for g, n in top5.items()))
+                if counts.empty:
+                    st.info("Aucun genre favori détecté (notes > 5).")
                 else:
-                    st.info("Aucune note > 5 pour l’instant.")
+                    # Top 6 + "Autres" pour lisibilité
+                    if len(counts) > 6:
+                        top_counts = counts.head(6)
+                        others = counts.iloc[6:].sum()
+                        counts_plot = pd.concat([top_counts, pd.Series({"Autres": others})])
+                    else:
+                        counts_plot = counts
     
-        # --- Likes par année (line chart)
-        st.markdown("### 📅 Likes par année de sortie")
+                    fig, ax = plt.subplots()
+                    ax.pie(
+                        counts_plot.values,
+                        labels=counts_plot.index,
+                        autopct="%1.0f%%",
+                        startangle=90
+                    )
+                    ax.axis("equal")
+                    st.pyplot(fig)
+                    top5 = counts.head(5)
+                    st.caption("Top genres : " + ", ".join(f"{g} ({n})" for g, n in top5.items()))
+    
+        # --- COURBE demandée : films notés par année de sortie (et non 'likes')
+        st.markdown("### 📅 Films notés par année de sortie")
         try:
-            df_y = pd.DataFrame(by_year)
-            if df_y.empty or "year" not in df_y.columns or "likes" not in df_y.columns:
+            if df_last.empty or "release_year" not in df_last.columns:
                 st.info("Aucune donnée par année pour l’instant.")
             else:
-                # forcer numérique et trier
-                df_y["year"] = pd.to_numeric(df_y["year"], errors="coerce")
-                df_y["likes"] = pd.to_numeric(df_y["likes"], errors="coerce").fillna(0).astype(int)
-                df_y = df_y.dropna(subset=["year"]).sort_values("year").set_index("year")
-                if df_y.empty:
+                df_year = df_last.dropna(subset=["release_year"]).copy()
+                df_year["release_year"] = pd.to_numeric(df_year["release_year"], errors="coerce")
+                df_year = df_year.dropna(subset=["release_year"])
+                if df_year.empty:
                     st.info("Aucune donnée par année pour l’instant.")
                 else:
-                    st.line_chart(df_y["likes"])
+                    counts_by_year = df_year.groupby("release_year")["title"].nunique().sort_index()
+                    st.line_chart(counts_by_year)
+                    st.caption(f"Total films notés (distincts) : {int(counts_by_year.sum())}")
         except Exception:
             st.info("Aucune donnée par année pour l’instant.")
     
         # --- Historique des notations (remplace l'ancien "🕒 Derniers avis")
         st.markdown("### 📝 Historique de mes notations")
-        
-        # On réutilise l'appel existant (tu l'as déjà plus haut pour les genres)
-        ratings, rerr = fetch_user_ratings(user, limit=5000)
-        if rerr:
-            st.warning(rerr)
-        else:   
-            df_hist = pd.DataFrame(ratings or [])
-            if df_hist.empty:
-                st.info("Tu n'as pas encore noté de films.")
-            else:
-                # tri par ts si dispo + garder la dernière note par film
-                if "ts" in df_hist.columns:
-                    df_hist["ts"] = pd.to_datetime(df_hist["ts"], errors="coerce")
-                    df_hist = df_hist.sort_values("ts")
-                df_hist = df_hist.groupby("title", as_index=False).tail(1).copy()
-        
-                # genres jolis
-                def _fmt_genres(s):
-                    if s is None or (isinstance(s, float) and pd.isna(s)):
-                        return ""
-                    return ", ".join([g.strip() for g in str(s).replace("|", ",").split(",") if g.strip()])
-                if "genres" in df_hist.columns:
-                    df_hist["genres"] = df_hist["genres"].apply(_fmt_genres)
-        
-                # Si l'API n'a pas encore movie_rating, on le récupère à la volée (cache 1h)
-                if "movie_rating" not in df_hist.columns:
-                    @st.cache_data(ttl=3600)
-                    def _fetch_movie_ratings_map(titles):
-                        out = {}
-                        for t in titles:
-                            try:
-                                r = api_get(f"movie-details/{t}")
-                                out[t] = r.json().get("rating") if r.status_code == 200 else None
-                            except Exception:
-                                out[t] = None
-                        return out
-        
-                    uniq_titles = sorted(df_hist["title"].dropna().unique().tolist())
-                    rating_map = _fetch_movie_ratings_map(uniq_titles)
-                    df_hist["movie_rating"] = df_hist["title"].map(rating_map)
-        
-                # colonnes + renommage
-                for c in ("release_year", "rating", "movie_rating"):
-                    if c in df_hist.columns:
-                        df_hist[c] = pd.to_numeric(df_hist[c], errors="coerce")
-        
-                cols_order = ["ts", "title", "release_year", "genres", "rating", "movie_rating"]
-                present = [c for c in cols_order if c in df_hist.columns]
-                df_display = df_hist[present].rename(columns={
-                    "ts": "horodatage",
-                    "title": "film",
-                    "release_year": "année",
-                    "genres": "genres",
-                    "rating": "ma_note",
-                    "movie_rating": "note_globale"
-                })
-        
-                # rendu
-                st.dataframe(df_display, width='stretch', hide_index=True)
-        
-                # export CSV
-                csv_hist = df_display.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "📥 Exporter mes notations (CSV)",
-                    csv_hist,
-                    file_name="historique_notations.csv",
-                    mime="text/csv"
-                )
+    
+        # On peut réutiliser les 'ratings' déjà chargés plus haut
+        df_hist = pd.DataFrame(ratings or [])
+        if df_hist.empty:
+            st.info("Tu n'as pas encore noté de films.")
+        else:
+            # tri par ts si dispo + garder la dernière note par film
+            if "ts" in df_hist.columns:
+                df_hist["ts"] = pd.to_datetime(df_hist["ts"], errors="coerce")
+                df_hist = df_hist.sort_values("ts")
+            df_hist = df_hist.groupby("title", as_index=False).tail(1).copy()
+    
+            # genres jolis
+            def _fmt_genres(s):
+                if s is None or (isinstance(s, float) and pd.isna(s)):
+                    return ""
+                return ", ".join([g.strip() for g in str(s).replace("|", ",").split(",") if g.strip()])
+            if "genres" in df_hist.columns:
+                df_hist["genres"] = df_hist["genres"].apply(_fmt_genres)
+    
+            # Si l'API n'a pas encore movie_rating, on le récupère à la volée (cache 1h)
+            if "movie_rating" not in df_hist.columns:
+                @st.cache_data(ttl=3600)
+                def _fetch_movie_ratings_map(titles):
+                    out = {}
+                    for t in titles:
+                        try:
+                            r = api_get(f"movie-details/{t}")
+                            out[t] = r.json().get("rating") if r.status_code == 200 else None
+                        except Exception:
+                            out[t] = None
+                    return out
+    
+                uniq_titles = sorted(df_hist["title"].dropna().unique().tolist())
+                rating_map = _fetch_movie_ratings_map(uniq_titles)
+                df_hist["movie_rating"] = df_hist["title"].map(rating_map)
+    
+            # colonnes + renommage
+            for c in ("release_year", "rating", "movie_rating"):
+                if c in df_hist.columns:
+                    df_hist[c] = pd.to_numeric(df_hist[c], errors="coerce")
+    
+            cols_order = ["ts", "title", "release_year", "genres", "rating", "movie_rating"]
+            present = [c for c in cols_order if c in df_hist.columns]
+            df_display = df_hist[present].rename(columns={
+                "ts": "horodatage",
+                "title": "film",
+                "release_year": "année",
+                "genres": "genres",
+                "rating": "ma_note",
+                "movie_rating": "note_globale"
+            })
+    
+            # rendu
+            st.dataframe(df_display, width='stretch', hide_index=True)
+    
+            # export CSV
+            csv_hist = df_display.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "📥 Exporter mes notations (CSV)",
+                csv_hist,
+                file_name="historique_notations.csv",
+                mime="text/csv"
+            )
+
 
     
 
@@ -963,6 +1059,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
