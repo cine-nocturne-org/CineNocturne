@@ -9,6 +9,7 @@ import sys
 import tempfile
 import json
 import math
+import plotly.express as px
 
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "E3_E4_API_app"))
@@ -103,7 +104,6 @@ PLAT_LABELS = {
     "canal": "Canal+",
     "disney": "Disney+",
     "paramount": "Paramount+",
-    "hbo": "HBO Max",
     "crunchyroll": "crunchyroll"
 }
 
@@ -524,15 +524,17 @@ def main_app():
                 # --- Pagination / Reset ---
                 left = max(0, len(st.session_state.get("reco_pool", [])) - len(st.session_state.get("reco_shown_titles", [])))
                 c_more, c_reset = st.columns([1, 1])
-    
+                
                 with c_more:
-                    if st.button(
+                    clicked = st.button(
                         f"🔁 Proposer d'autres recommandations ({left} restants)",
-                        key=f"btn_more_reco_{st.session_state.get('reco_page', 0)}",
+                        key="btn_more_reco",  # <- clé STABLE
                         disabled=not bool(st.session_state.get('reco_pool')) or left == 0
-                    ):
+                    )
+                    if clicked:
                         if not page_from_pool():
                             st.info("Plus de recommandations disponibles.")
+
     
                 with c_reset:
                     st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
@@ -554,7 +556,7 @@ def main_app():
                     selected_genre = st.selectbox("Choisissez un genre", genre_list)
                     selected_platforms = st.multiselect(
                         "Choisissez les plateformes",
-                        ["netflix", "prime", "hulu", "hbo", "apple", "canal", "disney", "paramount", "hbo", "crunchyroll"]
+                        ["netflix", "prime", "hulu", "hbo", "apple", "canal", "disney", "paramount", "crunchyroll"]
                     )
                     submitted = st.form_submit_button("Afficher des films aléatoires")
     
@@ -755,8 +757,6 @@ def main_app():
     with tab4:
         st.subheader("📈 Mon Profil")
     
-        import matplotlib.pyplot as plt
-    
         user = st.session_state.get("username")
         if not user:
             st.info("Connecte-toi pour voir ton tableau de bord.")
@@ -910,7 +910,7 @@ def main_app():
             st.info("Confusion non disponible.")
     
         # --- Genres préférés (pie chart) basés sur mes notes > THRESH ---
-        st.markdown("### 🎭 Genres préférés (selon mes notes > 5)")
+        st.markdown("### 🎭 Genres préférés")
         THRESH = 5.0
         if df_last.empty:
             st.info("Tu n'as pas encore noté de films.")
@@ -923,7 +923,7 @@ def main_app():
             else:
                 expl["genres_norm"] = expl["genres_list"].map(_normalize_genre_fr)
                 counts = expl.groupby("genres_norm")["title"].nunique().sort_values(ascending=False)
-    
+        
                 if counts.empty:
                     st.info("Aucun genre favori détecté (notes > 5).")
                 else:
@@ -934,18 +934,34 @@ def main_app():
                         counts_plot = pd.concat([top_counts, pd.Series({"Autres": others})])
                     else:
                         counts_plot = counts
-    
-                    fig, ax = plt.subplots()
-                    ax.pie(
-                        counts_plot.values,
-                        labels=counts_plot.index,
-                        autopct="%1.0f%%",
-                        startangle=90
+        
+                    # 👉 Passage à Plotly (interactif)
+                    df_counts = counts_plot.reset_index()
+                    df_counts.columns = ["genre", "films_distincts"]
+        
+                    fig = px.pie(
+                        df_counts,
+                        values="films_distincts",
+                        names="genre",
                     )
-                    ax.axis("equal")
-                    st.pyplot(fig)
+                    fig.update_traces(
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate=(
+                            "<b>%{label}</b><br>"
+                            "Films distincts: %{value}<br>"
+                            "Part: %{percent}<extra></extra>"
+                        ),
+                    )
+                    fig.update_layout(
+                        margin=dict(t=0, b=0, l=0, r=0),
+                        legend_title_text="Genres",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+        
                     top5 = counts.head(5)
                     st.caption("Top genres : " + ", ".join(f"{g} ({n})" for g, n in top5.items()))
+
     
         # --- COURBE demandée : films notés par année de sortie (et non 'likes')
         st.markdown("### 📅 Films notés par année de sortie")
@@ -1059,6 +1075,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
