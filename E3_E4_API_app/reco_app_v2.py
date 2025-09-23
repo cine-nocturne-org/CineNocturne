@@ -461,7 +461,7 @@ def main_app():
                             recos = payload.get("recommendations", [])
     
                             # ✅ NEW: enregistrer la liste "saga"
-                            st.session_state["saga_recos"] = payload.get("saga_recommendations", [])
+                            #st.session_state["saga_recos"] = payload.get("saga_recommendations", [])
     
                             # dédoublonnage
                             seen, pool = set(), []
@@ -633,23 +633,29 @@ def main_app():
                                 "synopsis": synopsis,
                             })
     
-            # --- Pagination / Reset ---
-            left = max(0, len(st.session_state.get("reco_pool", [])) - len(st.session_state.get("reco_shown_titles", [])))
-            c_more, c_reset = st.columns([1, 1])
-    
-            with c_more:
-                if st.button(
-                    f"🔁 Proposer d'autres recommandations ({left} restants)",
-                    key="btn_more_reco",
-                    disabled=not bool(st.session_state.get('reco_pool')) or left == 0
-                ):
-                    if not page_from_pool():
-                        st.info("Plus de recommandations disponibles.")
-                    st.rerun()   # 👈 pour éviter le double clic
-    
-            with c_reset:
-                st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
-
+              # --- Pagination / Reset ---
+              if st.session_state.get("last_run_id") and st.session_state.get("reco_pool"):
+                  left = max(
+                      0,
+                      len(st.session_state.get("reco_pool", []))
+                      - len(st.session_state.get("reco_shown_titles", []))
+                  )
+                  c_more, c_reset = st.columns([1, 1])
+              
+                  with c_more:
+                      # Le bouton n'est visible que si une reco a été faite ET qu'il reste des éléments
+                      if st.button(
+                          f"🔁 Proposer d'autres recommandations ({left} restants)",
+                          key="btn_more_reco",
+                          disabled=(left == 0)
+                      ):
+                          if not page_from_pool():
+                              st.info("Plus de recommandations disponibles.")
+                          st.rerun()  # éviter le double-clic
+              
+                  with c_reset:
+                      st.button("🧹 Réinitialiser la recherche",
+                                key="btn_reset_reco", on_click=reset_search_all)
 
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
@@ -1191,4 +1197,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
