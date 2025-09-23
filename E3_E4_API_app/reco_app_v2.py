@@ -335,6 +335,7 @@ def main_app():
                                 st.session_state["chosen_film_details"] = fetch_movie_details(match.get("title"))
                                 st.session_state["has_rated_current"] = False
                                 st.session_state["fuzzy_matches_1"] = None
+                                st.rerun()
     
         # === Fiche du film sélectionné ===
         chosen_film = st.session_state.get("chosen_film")
@@ -1075,6 +1076,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
