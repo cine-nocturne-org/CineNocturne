@@ -887,17 +887,25 @@ def main_app():
         # fallback si rien trouvé : top_genres de l'API
         if pref_genre_calc == "N/A" and top_genres:
             pref_genre_calc = top_genres[0].get("genre", "N/A")
-    
-        # --- Titre dynamique FR au-dessus des KPI ---
-        st.markdown(f"## {hero_title_for_genre(pref_genre_calc)}")
-    
-        # --- KPIs (label FR propre) ---
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("👍 Likes", f"{likes}")
-        c2.metric("👎 Dislikes", f"{dislikes}")
-        c3.metric("Taux de like", f"{like_rate*100:.0f}%")
-        c4.metric("Accuracy modèle", f"{accuracy*100:.0f}%")
-        c5.metric("Genre préféré", pref_genre_calc)
+
+      # Après avoir défini pref_genre_calc
+      def smart_capitalize(s: str) -> str:
+          if not isinstance(s, str) or not s:
+              return s
+          return s[0].upper() + s[1:]
+      
+      pref_genre_display = pref_genre_calc if pref_genre_calc in (None, "", "N/A") else smart_capitalize(pref_genre_calc)
+      
+      # Titre (ne change pas, on garde la version brute pour le mapping)
+      st.markdown(f"## {hero_title_for_genre(pref_genre_calc)}")
+      
+      # KPIs sans l’accuracy, avec la majuscule au genre préféré
+      c1, c2, c3, c4 = st.columns(4)
+      c1.metric("👍 Likes", f"{likes}")
+      c2.metric("👎 Dislikes", f"{dislikes}")
+      c3.metric("Taux de like", f"{like_rate*100:.0f}%")
+      c4.metric("Genre préféré", pref_genre_display)
+
     
         # --- Confusion matrix (tolérante)
         st.caption("Confusion (sur les recos où tu as donné un avis)")
@@ -1070,6 +1078,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
