@@ -408,7 +408,7 @@ async def update_rating(payload: RatingUpdate):
 
 # -- Recommandations XGB personnalisées
 @app.get("/recommend_xgb_personalized/{title}")
-async def recommend_xgb_personalized(title: str, top_k: int = 5):
+async def recommend_xgb_personalized(title: str, top_k: int = 5, min_shared_genres: int = 0):
     # 1. Index du film d'entrée
     try:
         idx = next(i for i, t in enumerate(titles) if t.lower() == title.lower())
@@ -471,7 +471,8 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         cosine_sim[idx] = -1.0
 
         candidate_indices = np.argsort(cosine_sim)[-50:][::-1]
-        candidate_indices = [i for i in candidate_indices if chosen_genres & set(genres_list_all[i])]
+        candidate_indices = [i for i in candidate_indices if len(chosen_genres & set(genres_list_all[i])) >= int(min_shared_genres)]
+
 
         _log_metric("n_candidates", len(candidate_indices))
 
@@ -1090,6 +1091,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
