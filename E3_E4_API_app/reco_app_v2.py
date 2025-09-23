@@ -144,6 +144,7 @@ def ensure_session_defaults():
         "chosen_film": None,
         "last_run_id": None,
         "film_input": "",
+        "saga_recos": [],
     }.items():
         st.session_state.setdefault(k, v)
 
@@ -153,6 +154,7 @@ def reset_reco(full=False):
     st.session_state["reco_shown_titles"] = []
     st.session_state["reco_page"] = 0
     st.session_state["last_run_id"] = None
+    st.session_state["saga_recos"] = []
     if full:
         st.session_state["chosen_film"] = None
         st.session_state["fuzzy_matches_1"] = None
@@ -246,17 +248,17 @@ def main_app():
     # ------------------------------
     with tab1:
         st.subheader("🎞️​ Dernier film vu :")
-
+    
         st.session_state.setdefault("has_rated_current", False)
         st.session_state.setdefault("chosen_film_details", {})
-
+    
         def fetch_movie_details(title: str) -> dict:
             try:
                 r = api_get(f"movie-details/{title}")
                 return r.json() if r.status_code == 200 else {}
             except requests.exceptions.RequestException:
                 return {}
-
+    
         @st.cache_data(ttl=3600)
         def _fetch_details_map(titles):
             out = {}
@@ -278,7 +280,7 @@ def main_app():
                 except Exception:
                     out[t] = {}
             return out
-
+    
         def _pretty_plats(plats):
             if not plats:
                 return []
@@ -286,11 +288,11 @@ def main_app():
                 return [PLAT_LABELS.get((p or "").lower(), p) for p in plats]
             except Exception:
                 return plats
-
+    
         # === Recherche ===
         film_input = st.text_input("Entrez le titre du film :", key="film_input")
         c_search, c_reset_search = st.columns([1, 1])
-
+    
         with c_search:
             if st.button("Chercher", key="btn_search"):
                 reset_reco(full=True)
@@ -298,7 +300,7 @@ def main_app():
                 st.session_state["chosen_film"] = None
                 st.session_state["chosen_film_details"] = {}
                 st.session_state["has_rated_current"] = False
-
+    
                 if film_input:
                     try:
                         with st.spinner("🔎 Recherche des correspondances…"):
@@ -312,10 +314,10 @@ def main_app():
                             st.error("❌ Erreur lors de la recherche.")
                     except requests.exceptions.RequestException:
                         st.error("❌ Erreur de connexion avec le serveur")
-
+    
         with c_reset_search:
             st.button("🧹 Réinitialiser la recherche", key="btn_reset_search", on_click=reset_search_all)
-
+    
         # === Sélection du film (grille d’options)
         if st.session_state.get("fuzzy_matches_1") and not st.session_state.get("chosen_film"):
             matches_info = []
@@ -330,42 +332,42 @@ def main_app():
                         movie_id = details.get("movie_id", movie_id)
                 except requests.exceptions.RequestException:
                     pass
-
+    
                 matches_info.append({
                     "title": match["title"],
                     "poster": poster_url,
                     "movie_id": movie_id
                 })
-
+    
             st.markdown("### Sélectionnez le film correct :")
             cols_per_row = 5
             rows = math.ceil(len(matches_info) / cols_per_row)
-
+    
             st.markdown("""
             <style>
             .card { border:1px solid #eee; border-radius:12px; padding:8px; height:100%; }
             </style>
             """, unsafe_allow_html=True)
-
+    
             for row in range(rows):
                 row_matches = matches_info[row*cols_per_row : (row+1)*cols_per_row]
                 if not row_matches:
                     continue
-
+    
                 cols = st.columns(cols_per_row, gap="small")
                 offset = (cols_per_row - len(row_matches)) // 2
-
+    
                 for i, match in enumerate(row_matches):
                     with cols[offset + i]:
                         with st.container(border=True):
                             if match.get("poster"):
                                 st.image(match["poster"], width="stretch")
                             st.caption(match.get("title", "Titre inconnu"))
-
+    
                             key = f"select_{match.get('movie_id','na')}_{row}_{i}"
                             is_selected = (st.session_state.get("chosen_film") == match.get("title"))
                             label = "✅ Sélectionné" if is_selected else "Sélectionner"
-
+    
                             if st.button(label, key=key, width="stretch", disabled=is_selected):
                                 reset_only_reco()
                                 st.session_state["chosen_film"] = match.get("title")
@@ -373,11 +375,11 @@ def main_app():
                                 st.session_state["has_rated_current"] = False
                                 st.session_state["fuzzy_matches_1"] = None
                                 st.rerun()
-
+    
         # === Fiche du film sélectionné ===
         chosen_film = st.session_state.get("chosen_film")
         chosen_details = st.session_state.get("chosen_film_details", {}) if chosen_film else {}
-
+    
         if chosen_film:
             st.markdown("---")
             with st.container(border=True):
@@ -391,18 +393,18 @@ def main_app():
                     genres = chosen_details.get("genres", [])
                     synopsis = chosen_details.get("synopsis", "Pas de synopsis disponible.")
                     plats = _pretty_plats(chosen_details.get("platforms", []))
-
+    
                     if isinstance(genres, list):
                         genres_str = ", ".join(genres)
                     else:
                         genres_str = str(genres) if genres else "N/A"
-
+    
                     st.markdown(f"### 🎬 {title} ({year})")
                     if plats:
                         st.caption("Disponible sur : " + " · ".join(plats))
                     st.write(f"**Genres :** {genres_str}")
                     st.write(synopsis)
-
+    
             # === Notation du film ===
             st.success(f"🎬 Film sélectionné : {chosen_film}")
             raw_note = st.text_input(
@@ -432,7 +434,7 @@ def main_app():
                             st.warning("La note doit être comprise **entre 0 et 10**.")
                     except ValueError:
                         st.warning("Format invalide. Exemple valide : 7.5")
-
+    
             # === Recommandations personnalisées ===
             st.subheader("🔍 Obtenir des recommandations personnalisées")
             btn_disabled = not st.session_state.get("has_rated_current", False)
@@ -444,20 +446,23 @@ def main_app():
                         mlflow.set_tags({"source": "streamlit", "stage": "inference_ui"})
                         mlflow.log_param("user", st.session_state.username)
                         mlflow.log_param("film_input", chosen_film)
-
+    
                         with st.spinner("🧠 Calcul des recommandations…"):
                             response = api_get(
                                 f"recommend_xgb_personalized/{chosen_film}",
                                 params={"top_k": 50}
                             )
-
+    
                         if response.status_code != 200:
                             st.error(response.json().get("detail", "Erreur inconnue"))
                         else:
                             payload = response.json()
                             st.session_state["last_run_id"] = payload.get("run_id")
                             recos = payload.get("recommendations", [])
-
+    
+                            # ✅ NEW: enregistrer la liste "saga"
+                            st.session_state["saga_recos"] = payload.get("saga_recommendations", [])
+    
                             # dédoublonnage
                             seen, pool = set(), []
                             for r in recos:
@@ -465,26 +470,26 @@ def main_app():
                                 if t and t not in seen:
                                     seen.add(t)
                                     pool.append(r)
-
+    
                             st.session_state["reco_pool"] = pool
                             st.session_state["reco_shown_titles"] = []
                             st.session_state["reco_page"] = 0
-
+    
                             if page_from_pool():
                                 st.success("🎯 Recommandations trouvées !")
                             else:
                                 st.info("Aucune recommandation trouvée pour ce film")
-
+    
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
                 except Exception as e:
                     st.error(f"❌ Erreur MLflow : {e}")
                     st.text(traceback.format_exc())
-
+    
             # --- Affichage + Feedback (page courante) + Watchlist ---
             recos = st.session_state.get("current_recos", [])
             run_id = st.session_state.get("last_run_id") or "no_run"
-
+    
             def send_feedback(reco_title: str, pred_label: int, pred_score: float, liked: int):
                 if st.session_state.get("last_run_id") is None:
                     st.error("Run MLflow introuvable. Relance une recommandation.")
@@ -507,14 +512,14 @@ def main_app():
                         st.error(resp.json().get("detail", "Erreur lors du feedback"))
                 except requests.exceptions.RequestException:
                     st.error("❌ Erreur de connexion avec le serveur")
-
+    
             if recos:
                 titles_to_fetch = [
                     r.get("title") for r in recos
                     if r.get("title") and (not r.get("poster_url") or r.get("platforms") in (None, [], ""))
                 ]
                 details_map = _fetch_details_map(sorted(set(titles_to_fetch))) if titles_to_fetch else {}
-
+    
                 for i, reco in enumerate(recos, start=1):
                     cols = st.columns([1, 3])
                     with cols[0]:
@@ -528,19 +533,19 @@ def main_app():
                         reco_synopsis = reco.get("synopsis") or details_map.get(reco_title, {}).get("synopsis") or "Pas de synopsis disponible."
                         score = float(reco.get("pred_score", 0.0))
                         pred_label = int(score >= 0.5)
-
+    
                         plats = reco.get("platforms")
                         if not plats:
                             plats = details_map.get(reco_title, {}).get("platforms", [])
                         plats = _pretty_plats(plats)
-
+    
                         st.markdown(f"### 🎬 {reco_title}")
                         st.write(f"**Probabilité d'aimer :** {int(score*100)}%")
                         if plats:
                             st.caption("Disponible sur : " + " · ".join(plats))
                         st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
                         st.write(reco_synopsis)
-
+    
                         b1, b2, b3 = st.columns(3)
                         with b1:
                             if st.button(
@@ -581,23 +586,70 @@ def main_app():
                                     "platforms": plats,
                                     "synopsis": reco_synopsis,
                                 })
+    
+            # === NEW: Section "Films de la même saga" (affichée en plus)
+            saga_list = st.session_state.get("saga_recos", []) or []
+            if saga_list:
+                st.markdown("## 🔗 Films de la même saga")
+    
+                saga_titles_to_fetch = [
+                    r.get("title") for r in saga_list
+                    if r.get("title") and (not r.get("poster_url") or r.get("platforms") in (None, [], ""))
+                ]
+                saga_details_map = _fetch_details_map(sorted(set(saga_titles_to_fetch))) if saga_titles_to_fetch else {}
+    
+                for i, r in enumerate(saga_list, start=1):
+                    t = r.get("title", "Titre inconnu")
+                    poster_url = r.get("poster_url") or saga_details_map.get(t, {}).get("poster_url")
+                    synopsis = r.get("synopsis") or saga_details_map.get(t, {}).get("synopsis") or "Pas de synopsis disponible."
+                    year = r.get("releaseYear") or saga_details_map.get(t, {}).get("releaseYear")
+    
+                    raw_genres = r.get("genres", [])
+                    genres = parse_genres(raw_genres)
+    
+                    plats = r.get("platforms") or saga_details_map.get(t, {}).get("platforms", [])
+                    plats = _pretty_plats(plats)
+    
+                    cols = st.columns([1, 3])
+                    with cols[0]:
+                        if poster_url:
+                            st.image(poster_url, width="stretch")
+                    with cols[1]:
+                        st.markdown(f"### 🎬 {t} ({year or 'N/A'})")
+                        if plats:
+                            st.caption("Disponible sur : " + " · ".join(plats))
+                        st.write(f"**Genres :** {', '.join(genres) if genres else 'N/A'}")
+                        st.write(synopsis)
+    
+                        in_wl = is_in_watchlist(t)
+                        if st.button("✅ Dans la watchlist" if in_wl else "➕ Watchlist",
+                                     key=f"wl_saga_{t}_{i}", disabled=in_wl):
+                            add_to_watchlist({
+                                "title": t,
+                                "poster_url": poster_url,
+                                "genres": genres,
+                                "releaseYear": year,
+                                "platforms": plats,
+                                "synopsis": synopsis,
+                            })
+    
+            # --- Pagination / Reset ---
+            left = max(0, len(st.session_state.get("reco_pool", [])) - len(st.session_state.get("reco_shown_titles", [])))
+            c_more, c_reset = st.columns([1, 1])
+    
+            with c_more:
+                if st.button(
+                    f"🔁 Proposer d'autres recommandations ({left} restants)",
+                    key="btn_more_reco",
+                    disabled=not bool(st.session_state.get('reco_pool')) or left == 0
+                ):
+                    if not page_from_pool():
+                        st.info("Plus de recommandations disponibles.")
+                    st.rerun()   # 👈 pour éviter le double clic
+    
+            with c_reset:
+                st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
 
-                # --- Pagination / Reset ---
-                left = max(0, len(st.session_state.get("reco_pool", [])) - len(st.session_state.get("reco_shown_titles", [])))
-                c_more, c_reset = st.columns([1, 1])
-
-                with c_more:
-                    if st.button(
-                        f"🔁 Proposer d'autres recommandations ({left} restants)",
-                        key="btn_more_reco",
-                        disabled=not bool(st.session_state.get('reco_pool')) or left == 0
-                    ):
-                        if not page_from_pool():
-                            st.info("Plus de recommandations disponibles.")
-                        st.rerun()   # 👈 pour éviter le double clic
-
-                with c_reset:
-                    st.button("🧹 Réinitialiser la recherche", key="btn_reset_reco", on_click=reset_search_all)
 
     # ------------------------------
     # Onglet 2 : Suggestions aléatoires
@@ -1139,3 +1191,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
