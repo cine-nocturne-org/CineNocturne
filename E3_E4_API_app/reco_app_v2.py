@@ -196,7 +196,7 @@ def main_app():
     "✨​ Recommandations perso",
     "🎲 Suggestions aléatoires",
     "📺​ Plateformes disponibles",
-    "📈 Profil"
+    "📈 Mon Profil"
     ])
 
 
@@ -756,7 +756,7 @@ def main_app():
     # Onglet 4 : Dashboard perso
     # ------------------------------
     with tab4:
-        st.subheader("📈 Mon Profil")
+        #st.subheader("📈 Mon Profil")
     
         user = st.session_state.get("username")
         if not user:
@@ -1070,6 +1070,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
