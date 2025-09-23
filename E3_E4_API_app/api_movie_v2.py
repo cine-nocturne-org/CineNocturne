@@ -418,11 +418,11 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     exact_title = titles[idx]
 
     # --- NEW: détecter les films de la même "saga" (liste séparée)
-    SAGA_SIM_THRESHOLD = 0.90  # 70%
-    saga_candidate_idxs = [
-        j for j, tj in enumerate(titles)
-        if j != idx and title_saga_similarity(exact_title, tj) >= SAGA_SIM_THRESHOLD
-    ]
+    # SAGA_SIM_THRESHOLD = 0.90  # 70%
+    # saga_candidate_idxs = [
+    #     j for j, tj in enumerate(titles)
+    #     if j != idx and title_saga_similarity(exact_title, tj) >= SAGA_SIM_THRESHOLD
+    # ]
 
     with mlflow_start_inference_run(input_title=exact_title, top_k=top_k) as (run, ok):
         try:
@@ -556,36 +556,36 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         _log_table_df(pd.DataFrame(rows_for_table))
 
         # === NEW: Section séparée "saga_recommendations"
-        main_reco_titles = {r["title"] for r in recos}
+        # main_reco_titles = {r["title"] for r in recos}
         
-        # titres de la même saga, hors film d'entrée et hors recos principales
-        saga_titles = [
-            titles[j] for j in saga_candidate_idxs
-            if titles[j].lower() != exact_title.lower() and titles[j] not in main_reco_titles
-        ]
+        # # titres de la même saga, hors film d'entrée et hors recos principales
+        # saga_titles = [
+        #     titles[j] for j in saga_candidate_idxs
+        #     if titles[j].lower() != exact_title.lower() and titles[j] not in main_reco_titles
+        # ]
         
-        # (optionnel) limite douce
-        MAX_SAGA = 12
-        saga_titles = saga_titles[:MAX_SAGA]
+        # # (optionnel) limite douce
+        # MAX_SAGA = 12
+        # saga_titles = saga_titles[:MAX_SAGA]
         
-        saga_recos = []
-        for t in saga_titles:
-            m = movies_dict.get(t, {})
-            saga_recos.append({
-                "title": m.get("title", t),
-                "poster_url": m.get("poster_url"),
-                "genres": m.get("genres"),
-                "synopsis": m.get("synopsis"),
-                "releaseYear": m.get("release_year"),
-                "rating": m.get("rating"),
-                "saga_boost": True
-            })
+        # saga_recos = []
+        # for t in saga_titles:
+        #     m = movies_dict.get(t, {})
+        #     saga_recos.append({
+        #         "title": m.get("title", t),
+        #         "poster_url": m.get("poster_url"),
+        #         "genres": m.get("genres"),
+        #         "synopsis": m.get("synopsis"),
+        #         "releaseYear": m.get("release_year"),
+        #         "rating": m.get("rating"),
+        #         "saga_boost": True
+        #     })
 
 
         return {
             "run_id": run_id,
             "recommendations": recos,          # <= top_k classique
-            "saga_recommendations": saga_recos # <= AJOUTÉ EN PLUS (ne réduit pas top_k)
+            #"saga_recommendations": saga_recos # <= AJOUTÉ EN PLUS (ne réduit pas top_k)
         }
 
 
@@ -1090,6 +1090,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
