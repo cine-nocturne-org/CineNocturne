@@ -52,6 +52,7 @@ opentelemetry-semantic-conventions==0.57b0
 packaging==25.0
 pandas==2.3.2
 pillow==11.3.0
+plotly 
 prometheus-client
 protobuf==6.32.0
 pyarrow==21.0.0
