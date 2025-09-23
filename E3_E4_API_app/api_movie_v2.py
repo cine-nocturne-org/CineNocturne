@@ -273,6 +273,31 @@ def normalize_for_match(s: str) -> str:
     s = s.translate(leet_map)
     return s
 
+# === Helpers "saga" / suites de films ===
+# (repose sur re et rapidfuzz.fuzz déjà importés)
+_ROMAN = r"(?:\b[ivxlcdm]+\b)"
+_SAGA_HINTS = r"(?:part|episode|chapitre|chapter|vol\.?|volume|saga|collection)"
+
+def _base_title(s: str) -> str:
+    """Titre 'racine' pour comparer les suites: retire parenthèses, sous-titres, numéros, etc."""
+    if not s:
+        return ""
+    s = normalize_for_match(s)
+    s = re.sub(r"\(.*?\)", " ", s)                 # retire parenthèses
+    s = re.split(r":|-", s)[0]                      # coupe aux sous-titres
+    s = re.sub(fr"\b{_SAGA_HINTS}\b.*", " ", s)    # retire "part/episode/vol..."
+    s = re.sub(fr"\b\d+\b", " ", s)                # nombres arabes (2, 3, 4…)
+    s = re.sub(fr"{_ROMAN}", " ", s)               # nombres romains (II, III…)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def title_saga_similarity(a: str, b: str) -> float:
+    """Similarité 0..1 entre les 'bases' de titres (robuste aux variantes)."""
+    a0, b0 = _base_title(a), _base_title(b)
+    if not a0 or not b0:
+        return 0.0
+    return fuzz.token_set_ratio(a0, b0) / 100.0
+
 
 @contextmanager
 def mlflow_start_inference_run(input_title: str, top_k: int):
@@ -391,6 +416,13 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
         raise HTTPException(status_code=404, detail="Film non trouvé")
 
     exact_title = titles[idx]
+
+    # --- NEW: détecter les films de la même "saga" (liste séparée)
+    SAGA_SIM_THRESHOLD = 0.70  # 70%
+    saga_candidate_idxs = [
+        j for j, tj in enumerate(titles)
+        if j != idx and title_saga_similarity(exact_title, tj) >= SAGA_SIM_THRESHOLD
+    ]
 
     with mlflow_start_inference_run(input_title=exact_title, top_k=top_k) as (run, ok):
         try:
@@ -523,7 +555,39 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
 
         _log_table_df(pd.DataFrame(rows_for_table))
 
-        return {"run_id": run_id, "recommendations": recos}
+        # === NEW: Section séparée "saga_recommendations"
+        main_reco_titles = {r["title"] for r in recos}
+        
+        # titres de la même saga, hors film d'entrée et hors recos principales
+        saga_titles = [
+            titles[j] for j in saga_candidate_idxs
+            if titles[j].lower() != exact_title.lower() and titles[j] not in main_reco_titles
+        ]
+        
+        # (optionnel) limite douce
+        MAX_SAGA = 12
+        saga_titles = saga_titles[:MAX_SAGA]
+        
+        saga_recos = []
+        for t in saga_titles:
+            m = movies_dict.get(t, {})
+            saga_recos.append({
+                "title": m.get("title", t),
+                "poster_url": m.get("poster_url"),
+                "genres": m.get("genres"),
+                "synopsis": m.get("synopsis"),
+                "releaseYear": m.get("release_year"),
+                "rating": m.get("rating"),
+                "saga_boost": True
+            })
+
+
+        return {
+            "run_id": run_id,
+            "recommendations": recos,          # <= top_k classique
+            "saga_recommendations": saga_recos # <= AJOUTÉ EN PLUS (ne réduit pas top_k)
+        }
+
 
 # -- Enregistrer le feedback utilisateur (like/dislike) + accuracy online
 @app.post("/log_feedback", include_in_schema=False, dependencies=[Depends(verify_credentials)])
@@ -1026,5 +1090,6 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
