@@ -913,55 +913,49 @@ def main_app():
         # --- Genres préférés (pie chart) basés sur mes notes > THRESH ---
         st.markdown("### 🎭 Genres préférés")
         THRESH = 5.0
+        
         if df_last.empty:
             st.info("Tu n'as pas encore noté de films.")
         else:
             liked = df_last[df_last["rating"] > THRESH].copy()
             liked["genres_list"] = liked["genres"].apply(_parse_g)
+        
             expl = liked.explode("genres_list").dropna(subset=["genres_list"])
-            if expl.empty:
+            expl["genres_list"] = expl["genres_list"].astype(str).str.strip()
+            expl = expl[expl["genres_list"] != ""]                 # <-- retire les vides
+            expl["genres_norm"] = expl["genres_list"].map(_normalize_genre_fr)
+        
+            counts = (
+                expl.groupby("genres_norm")["title"]
+                    .nunique()
+                    .sort_values(ascending=False)
+            )
+        
+            if counts.empty:
                 st.info("Aucun genre favori détecté (notes > 5).")
             else:
-                expl["genres_norm"] = expl["genres_list"].map(_normalize_genre_fr)
-                counts = expl.groupby("genres_norm")["title"].nunique().sort_values(ascending=False)
+                df_counts = counts.reset_index()
+                df_counts.columns = ["genre", "films_distincts"]
         
-                if counts.empty:
-                    st.info("Aucun genre favori détecté (notes > 5).")
-                else:
-                    # Top 6 + "Autres" pour lisibilité
-                    if len(counts) > 6:
-                        top_counts = counts.head(6)
-                        others = counts.iloc[6:].sum()
-                        counts_plot = pd.concat([top_counts, pd.Series({"Autres": others})])
-                    else:
-                        counts_plot = counts
-        
-                    # 👉 Passage à Plotly (interactif)
-                    df_counts = counts_plot.reset_index()
-                    df_counts.columns = ["genre", "films_distincts"]
-        
-                    fig = px.pie(
-                        df_counts,
-                        values="films_distincts",
-                        names="genre",
-                    )
-                    fig.update_traces(
-                        textposition="inside",
-                        textinfo="percent+label",
-                        hovertemplate=(
-                            "<b>%{label}</b><br>"
-                            "Films distincts: %{value}<br>"
-                            "Part: %{percent}<extra></extra>"
-                        ),
-                    )
-                    fig.update_layout(
-                        margin=dict(t=0, b=0, l=0, r=0),
-                        legend_title_text="Genres",
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-        
-                    top5 = counts.head(5)
-                    st.caption("Top genres : " + ", ".join(f"{g} ({n})" for g, n in top5.items()))
+                fig = px.pie(
+                    df_counts,
+                    values="films_distincts",
+                    names="genre",
+                    # hole=0.35,  # optionnel: donut
+                )
+                fig.update_traces(
+                    textposition="inside",
+                    textinfo="percent+label",    # si trop chargé, mets "label" ou "none"
+                    hovertemplate="<b>%{label}</b><br>Films distincts: %{value}<br>Part: %{percent}<extra></extra>",
+                )
+                fig.update_layout(
+                    margin=dict(t=0, b=0, l=0, r=0),
+                    legend_title_text="Genres",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                top5 = counts.head(5)
+                st.caption("Top genres : " + ", ".join(f"{g} ({n})" for g, n in top5.items()))
 
     
         # --- COURBE demandée : films notés par année de sortie (et non 'likes')
@@ -1076,6 +1070,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
