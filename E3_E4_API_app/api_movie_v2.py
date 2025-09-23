@@ -418,7 +418,7 @@ async def recommend_xgb_personalized(title: str, top_k: int = 5):
     exact_title = titles[idx]
 
     # --- NEW: détecter les films de la même "saga" (liste séparée)
-    SAGA_SIM_THRESHOLD = 0.70  # 70%
+    SAGA_SIM_THRESHOLD = 0.90  # 70%
     saga_candidate_idxs = [
         j for j, tj in enumerate(titles)
         if j != idx and title_saga_similarity(exact_title, tj) >= SAGA_SIM_THRESHOLD
@@ -1090,6 +1090,7 @@ async def get_user_ratings(user_name: str, limit: int = 200):
 
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Erreur SQLAlchemy : {str(e)}")
+
 
 
 
