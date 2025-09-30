@@ -1,31 +1,54 @@
 # config.py
 import os
-import mlflow
 import pathlib
+from sqlalchemy import create_engine, text
 
 # ------------------------------
-# PostgreSQL Render pour MLflow
+# MySQL BDD pour MLflow / monitoring
 # ------------------------------
-DB_URL = "postgresql+psycopg2://mlflow_db_evzp_user:ZIG9DNZ2gWeqCOQ7SkjIM7cZI9tJcp53@dpg-d2o5rour433s73avu490-a.frankfurt-postgres.render.com/mlflow_db_evzp"
+DB_URL = "mysql+pymysql://louve:%40Marley080922@mysql-louve.alwaysdata.net/louve_movies"
 
-# Variable pour compatibilité API
-MLFLOW_TRACKING_URI = DB_URL
+# Nom de la table pour les logs
+MONITORING_TABLE = "monitoring"
 
 # Dossier local pour les artefacts (tu peux changer)
 MLFLOW_ARTIFACT_LOCATION = str(pathlib.Path(__file__).parent / "mlflow_artifacts")
 pathlib.Path(MLFLOW_ARTIFACT_LOCATION).mkdir(exist_ok=True)
 
 # ------------------------------
-# Configuration MLflow
+# Connexion BDD
 # ------------------------------
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+engine = create_engine(DB_URL, pool_pre_ping=True)
 
-# Créer l'expérience si elle n'existe pas
+# ------------------------------
+# Création table monitoring si elle n'existe pas
+# ------------------------------
+with engine.begin() as conn:
+    conn.execute(
+        text(f"""
+        CREATE TABLE IF NOT EXISTS {MONITORING_TABLE} (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            run_id VARCHAR(255),
+            endpoint VARCHAR(255),
+            input_title TEXT,
+            params JSON,
+            metrics JSON,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+    )
+
+# ------------------------------
+# MLflow (local artefacts seulement)
+# ------------------------------
+import mlflow
+
+mlflow.set_tracking_uri(f"file://{MLFLOW_ARTIFACT_LOCATION}")
+
 EXPERIMENT_NAME = "louve_movies_monitoring"
 try:
     mlflow.create_experiment(EXPERIMENT_NAME, artifact_location=MLFLOW_ARTIFACT_LOCATION)
 except mlflow.exceptions.MlflowException:
-    # Si l'expérience existe déjà
     pass
 
 mlflow.set_experiment(EXPERIMENT_NAME)
