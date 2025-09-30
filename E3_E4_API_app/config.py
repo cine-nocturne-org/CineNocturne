@@ -2,7 +2,9 @@
 import os
 import pathlib
 from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 
+load_dotenv()
 # ------------------------------
 # MySQL BDD pour MLflow / monitoring
 # ------------------------------
@@ -14,7 +16,7 @@ MONITORING_TABLE = "monitoring"
 # Dossier local pour les artefacts (tu peux changer)
 MLFLOW_ARTIFACT_LOCATION = str(pathlib.Path(__file__).parent / "mlflow_artifacts")
 pathlib.Path(MLFLOW_ARTIFACT_LOCATION).mkdir(exist_ok=True)
-
+MLFLOW_TRACKING_URI: str = os.getenv("MLFLOW_TRACKING_URI")  # <-- ne surtout pas supprimer
 # ------------------------------
 # Connexion BDD
 # ------------------------------
